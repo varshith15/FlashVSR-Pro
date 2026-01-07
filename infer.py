@@ -1,0 +1,501 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
+import sys
+import re
+import time
+import argparse
+import warnings
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+import imageio
+from tqdm import tqdm
+import torch
+from einops import rearrange
+
+# 添加项目路径
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(current_dir)
+
+from diffsynth import ModelManager, FlashVSRFullPipeline, FlashVSRTinyPipeline, FlashVSRTinyLongPipeline
+from utils.utils import Causal_LQ4x_Proj
+from utils.TCDecoder import build_tcdecoder
+
+# 音频功能（可选）
+try:
+    from utils.audio_utils import copy_video_with_audio, has_audio_stream
+    AUDIO_AVAILABLE = True
+except ImportError as e:
+    AUDIO_AVAILABLE = False
+    warnings.warn(f"Audio utilities not available: {e}")
+    
+    # 提供简单的替代函数
+    def has_audio_stream(path):
+        return False
+    
+    def copy_video_with_audio(input_path, output_path):
+        import shutil
+        if input_path != output_path:
+            shutil.copy2(input_path, output_path)
+        return True
+
+# 分块功能
+try:
+    from utils.tile_utils import calculate_tile_coords, apply_tiled_inference_simple
+    TILE_AVAILABLE = True
+except ImportError as e:
+    TILE_AVAILABLE = False
+    warnings.warn(f"Tile utilities not available: {e}")
+    
+    # 提供简单的替代函数
+    def calculate_tile_coords(height, width, tile_size, overlap):
+        return [(0, 0, width, height)]
+    
+    def apply_tiled_inference_simple(pipeline, LQ_video, tile_size=256, overlap=24, **pipeline_kwargs):
+        # 不使用分块，直接调用
+        return pipeline(**pipeline_kwargs)
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="FlashVSR Inference Script")
+    
+    # 基本参数
+    parser.add_argument("-i", "--input", type=str, required=True,
+                       help="Path to input video file or folder of images")
+    parser.add_argument("-o", "--output", type=str, default="./results",
+                       help="Output directory or file path")
+    parser.add_argument("--mode", type=str, default="tiny", 
+                       choices=["full", "tiny", "tiny-long"],
+                       help="Inference mode: full (with VAE), tiny (TCDecoder), tiny-long (for long videos)")
+    parser.add_argument("--version", type=str, default="1.1",
+                       choices=["1", "1.1"],
+                       help="Model version")
+    
+    # 分块参数
+    parser.add_argument("--tile-dit", action="store_true",
+                       help="Enable tiled inference for DiT (reduces VRAM usage)")
+    parser.add_argument("--tile-vae", action="store_true",
+                       help="Enable tiled decoding for VAE (only for full mode)")
+    parser.add_argument("--tile-size", type=int, default=256,
+                       help="Tile size for tiled inference")
+    parser.add_argument("--overlap", type=int, default=24,
+                       help="Overlap size between tiles")
+    
+    # 音频参数
+    parser.add_argument("--keep-audio", action="store_true",
+                       help="Keep audio from input video (if exists)")
+    
+    # 推理参数
+    parser.add_argument("--scale", type=float, default=2.0,
+                       help="Upscale factor")
+    parser.add_argument("--seed", type=int, default=0,
+                       help="Random seed")
+    parser.add_argument("--sparse-ratio", type=float, default=2.0,
+                       help="Sparse attention ratio (1.5=faster, 2.0=stable)")
+    parser.add_argument("--kv-ratio", type=float, default=3.0,
+                       help="KV cache ratio")
+    parser.add_argument("--local-range", type=int, default=11,
+                       help="Local attention range (9=sharper, 11=stable)")
+    parser.add_argument("--color-fix", action="store_true",
+                       help="Apply color correction")
+    parser.add_argument("--fps", type=int, default=30,
+                       help="Output FPS (for image sequences)")
+    parser.add_argument("--quality", type=int, default=6,
+                       help="Output video quality (0-10)")
+    
+    # 其他参数
+    parser.add_argument("--device", type=str, default="cuda",
+                       help="Device to use (cuda/cpu)")
+    parser.add_argument("--dtype", type=str, default="bf16",
+                       choices=["fp32", "fp16", "bf16"],
+                       help="Data type")
+    
+    return parser.parse_args()
+
+def tensor2video(frames: torch.Tensor):
+    """Convert tensor to list of PIL Images"""
+    frames = rearrange(frames, "C T H W -> T H W C")
+    frames = ((frames.float() + 1) * 127.5).clip(0, 255).cpu().numpy().astype(np.uint8)
+    frames = [Image.fromarray(frame) for frame in frames]
+    return frames
+
+def natural_key(name: str):
+    """Natural sort key for filenames"""
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r'([0-9]+)', os.path.basename(name))]
+
+def list_images_natural(folder: str):
+    """List image files with natural sorting"""
+    exts = ('.png', '.jpg', '.jpeg', '.PNG', '.JPG', '.JPEG')
+    fs = [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(exts)]
+    fs.sort(key=natural_key)
+    return fs
+
+def largest_8n1_leq(n):
+    """Find largest 8n+1 <= n"""
+    return 0 if n < 1 else ((n - 1)//8)*8 + 1
+
+def is_video(path):
+    """Check if path is a video file"""
+    return os.path.isfile(path) and path.lower().endswith(('.mp4','.mov','.avi','.mkv','.webm'))
+
+def pil_to_tensor_neg1_1(img: Image.Image, dtype=torch.bfloat16, device='cuda'):
+    """Convert PIL Image to tensor in range [-1, 1]"""
+    t = torch.from_numpy(np.asarray(img, np.uint8)).to(device=device, dtype=torch.float32)
+    t = t.permute(2,0,1) / 255.0 * 2.0 - 1.0  # CHW in [-1,1]
+    return t.to(dtype)
+
+def save_video(frames, save_path, fps=30, quality=5):
+    """Save frames as video"""
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    w = imageio.get_writer(save_path, fps=fps, quality=quality)
+    for f in tqdm(frames, desc=f"Saving {os.path.basename(save_path)}"):
+        w.append_data(np.array(f))
+    w.close()
+
+def compute_scaled_and_target_dims(w0: int, h0: int, scale: float = 2.0, multiple: int = 128):
+    """Compute scaled dimensions and target dimensions"""
+    if w0 <= 0 or h0 <= 0:
+        raise ValueError("Invalid original size")
+    if scale <= 0:
+        raise ValueError("scale must be > 0")
+
+    sW = int(round(w0 * scale))
+    sH = int(round(h0 * scale))
+
+    tW = (sW // multiple) * multiple
+    tH = (sH // multiple) * multiple
+
+    if tW == 0 or tH == 0:
+        raise ValueError(
+            f"Scaled size too small ({sW}x{sH}) for multiple={multiple}. "
+            f"Increase scale (got {scale})."
+        )
+
+    return sW, sH, tW, tH
+
+def upscale_then_center_crop(img: Image.Image, scale: float, tW: int, tH: int) -> Image.Image:
+    """Upscale and center crop image"""
+    w0, h0 = img.size
+    sW = int(round(w0 * scale))
+    sH = int(round(h0 * scale))
+
+    if tW > sW or tH > sH:
+        raise ValueError(
+            f"Target crop ({tW}x{tH}) exceeds scaled size ({sW}x{sH}). "
+            f"Increase scale."
+        )
+
+    up = img.resize((sW, sH), Image.BICUBIC)
+    l = (sW - tW) // 2
+    t = (sH - tH) // 2
+    return up.crop((l, t, l + tW, t + tH))
+
+def prepare_input_tensor(path: str, scale: float = 2, dtype=torch.bfloat16, device='cuda'):
+    """Prepare input tensor from video or image sequence"""
+    if os.path.isdir(path):
+        # Image sequence
+        paths0 = list_images_natural(path)
+        if not paths0:
+            raise FileNotFoundError(f"No images in {path}")
+
+        with Image.open(paths0[0]) as _img0:
+            w0, h0 = _img0.size
+        N0 = len(paths0)
+        print(f"[{os.path.basename(path)}] Original Resolution: {w0}x{h0} | Frames: {N0}")
+
+        sW, sH, tW, tH = compute_scaled_and_target_dims(w0, h0, scale=scale, multiple=128)
+        print(f"[{os.path.basename(path)}] Scaled (x{scale:.2f}): {sW}x{sH} -> Target: {tW}x{tH}")
+
+        paths = paths0 + [paths0[-1]] * 4
+        F = largest_8n1_leq(len(paths))
+        if F == 0:
+            raise RuntimeError(f"Not enough frames after padding. Got {len(paths)}.")
+        paths = paths[:F]
+        print(f"[{os.path.basename(path)}] Target Frames (8n-3): {F-4}")
+
+        frames = []
+        for p in paths:
+            with Image.open(p).convert('RGB') as img:
+                img_out = upscale_then_center_crop(img, scale=scale, tW=tW, tH=tH)
+            frames.append(pil_to_tensor_neg1_1(img_out, dtype, device))
+        vid = torch.stack(frames, 0).permute(1,0,2,3).unsqueeze(0)
+        fps = 30
+        return vid, tH, tW, F, fps, None
+
+    if is_video(path):
+        # Video file
+        rdr = imageio.get_reader(path)
+        first = Image.fromarray(rdr.get_data(0)).convert('RGB')
+        w0, h0 = first.size
+
+        meta = {}
+        try: 
+            meta = rdr.get_meta_data()
+        except Exception: 
+            pass
+        
+        fps_val = meta.get('fps', 30)
+        fps = int(round(fps_val)) if isinstance(fps_val, (int, float)) else 30
+
+        def count_frames(r):
+            try:
+                nf = meta.get('nframes', None)
+                if isinstance(nf, int) and nf > 0: 
+                    return nf
+            except Exception: 
+                pass
+            try: 
+                return r.count_frames()
+            except Exception:
+                n = 0
+                try:
+                    while True: 
+                        r.get_data(n)
+                        n += 1
+                except Exception:
+                    return n
+
+        total = count_frames(rdr)
+        if total <= 0:
+            rdr.close()
+            raise RuntimeError(f"Cannot read frames from {path}")
+
+        print(f"[{os.path.basename(path)}] Original: {w0}x{h0} | Frames: {total} | FPS: {fps}")
+
+        sW, sH, tW, tH = compute_scaled_and_target_dims(w0, h0, scale=scale, multiple=128)
+        print(f"[{os.path.basename(path)}] Scaled (x{scale:.2f}): {sW}x{sH} -> Target: {tW}x{tH}")
+
+        idx = list(range(total)) + [total-1] * 4
+        F = largest_8n1_leq(len(idx))
+        if F == 0:
+            rdr.close()
+            raise RuntimeError(f"Not enough frames after padding. Got {len(idx)}.")
+        idx = idx[:F]
+        print(f"[{os.path.basename(path)}] Target Frames (8n-3): {F-4}")
+
+        frames = []
+        try:
+            for i in idx:
+                img = Image.fromarray(rdr.get_data(i)).convert('RGB')
+                img_out = upscale_then_center_crop(img, scale=scale, tW=tW, tH=tH)
+                frames.append(pil_to_tensor_neg1_1(img_out, dtype, device))
+        finally:
+            try: 
+                rdr.close()
+            except Exception: 
+                pass
+
+        vid = torch.stack(frames, 0).permute(1,0,2,3).unsqueeze(0)
+        return vid, tH, tW, F, fps, path
+
+    raise ValueError(f"Unsupported input: {path}")
+
+def init_pipeline(args):
+    """Initialize pipeline based on mode and version"""
+    print(f"[Device] {torch.cuda.current_device()}, {torch.cuda.get_device_name(torch.cuda.current_device())}")
+    
+    # Determine model path
+    model_dir = f"./FlashVSR-v{args.version.replace('.', '')}" if args.version == "1.1" else "./FlashVSR"
+    
+    # Setup dtype
+    dtype_map = {
+        "fp32": torch.float32,
+        "fp16": torch.float16,
+        "bf16": torch.bfloat16,
+    }
+    dtype = dtype_map.get(args.dtype, torch.bfloat16)
+    
+    # Initialize model manager
+    mm = ModelManager(torch_dtype=dtype, device="cpu")
+    
+    # Load models based on mode
+    if args.mode == "full":
+        mm.load_models([
+            f"{model_dir}/diffusion_pytorch_model_streaming_dmd.safetensors",
+            f"{model_dir}/Wan2.1_VAE.pth",
+        ])
+        pipe = FlashVSRFullPipeline.from_model_manager(mm, device=args.device)
+        pipe.vae.model.encoder = None
+        pipe.vae.model.conv1 = None
+    else:
+        mm.load_models([
+            f"{model_dir}/diffusion_pytorch_model_streaming_dmd.safetensors",
+        ])
+        if args.mode == "tiny":
+            pipe = FlashVSRTinyPipeline.from_model_manager(mm, device=args.device)
+        else:  # tiny-long
+            pipe = FlashVSRTinyLongPipeline.from_model_manager(mm, device=args.device)
+        
+        # Load TCDecoder for tiny modes
+        multi_scale_channels = [512, 256, 128, 128]
+        pipe.TCDecoder = build_tcdecoder(
+            new_channels=multi_scale_channels, 
+            new_latent_channels=16+768
+        ).to(args.device, dtype=dtype)
+        
+        tcd_path = f"{model_dir}/TCDecoder.ckpt"
+        if os.path.exists(tcd_path):
+            mis = pipe.TCDecoder.load_state_dict(
+                torch.load(tcd_path, map_location="cpu"), 
+                strict=False
+            )
+            print(f"[TCDecoder] Loaded with missing keys: {mis.missing_keys}")
+    
+    # Load LQ projector
+    pipe.denoising_model().LQ_proj_in = Causal_LQ4x_Proj(
+        in_dim=3, out_dim=1536, layer_num=1
+    ).to(args.device, dtype=dtype)
+    
+    lq_path = f"{model_dir}/LQ_proj_in.ckpt"
+    if os.path.exists(lq_path):
+        pipe.denoising_model().LQ_proj_in.load_state_dict(
+            torch.load(lq_path, map_location="cpu"), 
+            strict=True
+        )
+    
+    pipe.denoising_model().LQ_proj_in.to(args.device)
+    pipe.to(args.device)
+    pipe.enable_vram_management(num_persistent_param_in_dit=None)
+    pipe.init_cross_kv()
+    pipe.load_models_to_device(["dit", "vae"])
+    
+    return pipe
+
+def main():
+    args = parse_args()
+    
+    # 检查音频功能可用性
+    if args.keep_audio and not AUDIO_AVAILABLE:
+        print("[Warning] Audio preservation requested but audio utilities not available.")
+        print("[Warning] Install ffmpeg and ensure it's in PATH for audio support.")
+        args.keep_audio = False
+    
+    # 检查分块功能可用性
+    if (args.tile_dit or args.tile_vae) and not TILE_AVAILABLE:
+        print("[Warning] Tiled inference requested but tile utilities not available.")
+        print("[Warning] Continuing without tiling (may cause high VRAM usage).")
+        args.tile_dit = False
+        args.tile_vae = False
+    
+    # 创建输出目录
+    if os.path.isdir(args.output):
+        # 如果是目录，创建子目录
+        output_dir = args.output
+        os.makedirs(output_dir, exist_ok=True)
+    else:
+        # 如果是文件路径，确保父目录存在
+        output_dir = os.path.dirname(args.output)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+    
+    # 准备输入
+    print(f"[FlashVSR] Processing: {args.input}")
+    
+    # 设置数据类型
+    if args.dtype == "fp16":
+        dtype = torch.float16
+    elif args.dtype == "bf16":
+        dtype = torch.bfloat16
+    else:
+        dtype = torch.float32
+    
+    LQ, th, tw, F, fps, input_video_path = prepare_input_tensor(
+        args.input, 
+        scale=args.scale, 
+        dtype=dtype,
+        device=args.device
+    )
+    
+    # 初始化pipeline
+    pipe = init_pipeline(args)
+    
+    # 确定输出文件名
+    input_name = os.path.basename(args.input.rstrip('/')).split('.')[0]
+    if os.path.isdir(args.output):
+        output_filename = f"FlashVSR_{args.mode}_{input_name}_seed{args.seed}.mp4"
+        output_path = os.path.join(args.output, output_filename)
+    else:
+        output_path = args.output
+    
+    print(f"[Output] Will save to: {output_path}")
+    
+    # 准备pipeline参数
+    pipeline_kwargs = {
+        "prompt": "", 
+        "negative_prompt": "", 
+        "cfg_scale": 1.0, 
+        "num_inference_steps": 1, 
+        "seed": args.seed,
+        "LQ_video": LQ, 
+        "num_frames": F, 
+        "height": th, 
+        "width": tw, 
+        "is_full_block": False, 
+        "if_buffer": True,
+        "topk_ratio": args.sparse_ratio * 768 * 1280 / (th * tw), 
+        "kv_ratio": args.kv_ratio,
+        "local_range": args.local_range,
+        "color_fix": args.color_fix,
+    }
+    
+    # 添加VAE分块参数（仅full模式）
+    if args.mode == "full" and args.tile_vae:
+        pipeline_kwargs["tiled"] = True
+    
+    # 应用分块推理或正常推理
+    if args.tile_dit:
+        print(f"[Tiled DiT] Enabled with tile_size={args.tile_size}, overlap={args.overlap}")
+        
+        # 使用分块推理
+        video = apply_tiled_inference_simple(
+            pipe,
+            LQ,
+            tile_size=args.tile_size,
+            overlap=args.overlap,
+            **pipeline_kwargs
+        )
+    else:
+        # 正常推理
+        print("[FlashVSR] Running standard inference...")
+        video = pipe(**pipeline_kwargs)
+    
+    # 转换并保存
+    frames = tensor2video(video)
+    
+    # 保存临时视频文件（用于音频合并）
+    temp_output = output_path.replace('.mp4', '_temp.mp4')
+    save_video(frames, temp_output, fps=fps, quality=args.quality)
+    
+    # 处理音频
+    if args.keep_audio and input_video_path and is_video(input_video_path):
+        print(f"[Audio] Checking audio in input video...")
+        if has_audio_stream(input_video_path):
+            print(f"[Audio] Preserving audio from input video")
+            # 合并音频
+            copy_video_with_audio(temp_output, output_path)
+            
+            # 清理临时文件
+            if os.path.exists(temp_output):
+                os.remove(temp_output)
+        else:
+            print(f"[Audio] No audio found in input video, saving silent video")
+            # 直接重命名
+            if os.path.exists(temp_output):
+                os.rename(temp_output, output_path)
+    else:
+        # 直接重命名（无音频处理）
+        if os.path.exists(temp_output):
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            os.rename(temp_output, output_path)
+    
+    print(f"[FlashVSR] Done! Output saved to: {output_path}")
+    
+    # 清理
+    del pipe
+    torch.cuda.empty_cache()
+
+if __name__ == "__main__":
+    main()

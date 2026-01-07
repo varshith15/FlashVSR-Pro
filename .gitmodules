@@ -1,0 +1,4 @@
+[submodule "Block-Sparse-Attention"]
+	path = Block-Sparse-Attention
+	url = https://github.com/LujiaJin/Block-Sparse-Attention.git
+	branch = flashvsr-fix

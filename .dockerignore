@@ -1,0 +1,24 @@
+# ============ 强制排除：模型权重文件 (最大节省项) ============
+examples/WanVSR/FlashVSR/
+examples/WanVSR/FlashVSR-v1.1/
+
+# ============ 强制排除：输入测试数据 ============
+examples/WanVSR/inputs/
+
+# ============ 建议排除：构建缓存、开发文件等 ============
+**/__pycache__/
+**/*.py[cod]
+*.log
+*.tmp
+*.cache
+.git/
+.gitignore
+.gitmodules
+.idea/
+.vscode/
+*.md
+*.txt
+!README.md
+!requirements.txt
+!setup.py
+!LICENSE

@@ -1,0 +1,38 @@
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Package build
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+env/
+venv/
+.env
+.venv
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# IDE files and settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data and model checkpoints
+results/*
+*.ckpt
+*.safetensors
+*.pth
+*.bin
