@@ -1,0 +1,31 @@
+# ============ Forced exclude: model weight directories (big savings) ============
+models/
+
+# ============ Forced exclude: input test data ============
+inputs/
+
+# ============ Forced exclude: output results ============
+results/
+
+# ============ Recommended exclude: build caches, dev files, etc. ============
+**/__pycache__/
+**/*.py[cod]
+*.log
+*.tmp
+*.cache
+.git/
+.gitignore
+.gitmodules
+.idea/
+.vscode/
+*.md
+*.txt
+*.tar.gz
+*.zip
+*.tar
+*.bak
+*.backup
+!README.md
+!requirements.txt
+!setup.py
+!LICENSE

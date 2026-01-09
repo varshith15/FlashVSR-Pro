@@ -1,0 +1,7 @@
+# config.yaml
+defaults:
+  mode: "tiny"
+  scale: 2.0
+  device: "cuda"
+  tile_size: 256
+  overlap: 24
