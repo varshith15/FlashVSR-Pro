@@ -305,11 +305,11 @@ def build_tcdecoder(new_channels = [512, 256, 128, 128],
                                   dtype=torch.bfloat16,
                                   new_latent_channels=None):
     """
-    构建“更宽”的 decoder；深度增强（IdentityConv2d+ReLU）已在 TAEHV 内部完成。
-    - 不创建 small / 不做移植
-    - base_ckpt_path 参数保留但不使用（接口兼容）
+    Build a "wider" decoder; deepening (IdentityConv2d + ReLU) is already integrated inside TAEHV.
+    - Do not create a small model / do not perform transplanting
+    - Keep base_ckpt_path parameter for compatibility but do not use it
 
-    返回：big （单个模型）
+    Returns: big (the single model)
     """
     if new_latent_channels is not None:
         big = TAEHV(checkpoint_path=None, channels=new_channels, latent_channels=new_latent_channels).to(device).to(dtype).train()
