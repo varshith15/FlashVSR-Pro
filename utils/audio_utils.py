@@ -46,38 +46,48 @@ def merge_audio_video(video_path, audio_path, output_path):
         shutil.copy2(video_path, output_path)
         return False
 
-def copy_video_with_audio(input_video_path, output_video_path):
+def copy_video_with_audio(original_video_path, processed_video_path, output_path):
     """
-    Smart audio handling: if the input video has audio, extract and merge it into the output video
+    Smart audio handling: 
+    - original_video_path: original video with audio (optional)
+    - processed_video_path: processed video without audio
+    - output_path: final output with audio from original video (if exists)
     """
-    if not has_audio_stream(input_video_path):
-        # No audio, simply copy the video file
-        if output_video_path != input_video_path:
-            shutil.copy2(input_video_path, output_video_path)
+    # Check if original video has audio
+    if not has_audio_stream(original_video_path):
+        # No audio in original, just copy the processed video
+        print(f"[Audio] No audio in original video, saving silent video")
+        shutil.copy2(processed_video_path, output_path)
         return True
     
-    # Extract audio
-    audio_path, success = extract_audio(input_video_path)
-    if not success:
-        warnings.warn("Failed to extract audio, outputting silent video")
-        if output_video_path != input_video_path:
-            shutil.copy2(input_video_path, output_video_path)
-        return False
-    
     try:
-        # Create temporary output path
-        temp_output = output_video_path + '.temp.mp4'
+        # Extract audio from original video
+        print(f"[Audio] Extracting audio from original video...")
+        audio_path, success = extract_audio(original_video_path)
+        if not success:
+            warnings.warn("Failed to extract audio, outputting silent video")
+            shutil.copy2(processed_video_path, output_path)
+            return False
         
-        # Merge audio
-        merge_success = merge_audio_video(input_video_path, audio_path, temp_output)
+        # Create temporary output path
+        temp_output = output_path + '.temp.mp4'
+        
+        # Merge audio with processed video
+        print(f"[Audio] Merging audio with processed video...")
+        merge_success = merge_audio_video(processed_video_path, audio_path, temp_output)
         
         if merge_success:
-            # Replace original output file
-            if os.path.exists(output_video_path):
-                os.remove(output_video_path)
-            os.rename(temp_output, output_video_path)
+            # Replace final output
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            os.rename(temp_output, output_path)
+            print(f"[Audio] Audio merged successfully")
+        else:
+            # Merge failed, use processed video without audio
+            print(f"[Audio] Failed to merge audio, using silent video")
+            shutil.copy2(processed_video_path, output_path)
         
-        # Clean temporary audio file
+        # Clean up temporary audio file
         if os.path.exists(audio_path):
             os.remove(audio_path)
             temp_dir = os.path.dirname(audio_path)
@@ -88,9 +98,9 @@ def copy_video_with_audio(input_video_path, output_video_path):
                     pass
         
         return merge_success
+        
     except Exception as e:
         warnings.warn(f"Error in audio processing: {e}")
-        # Fallback: copy silent video
-        if output_video_path != input_video_path:
-            shutil.copy2(input_video_path, output_video_path)
+        # Fallback: copy processed video without audio
+        shutil.copy2(processed_video_path, output_path)
         return False

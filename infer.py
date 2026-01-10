@@ -36,10 +36,9 @@ except ImportError as e:
     def has_audio_stream(path):
         return False
     
-    def copy_video_with_audio(input_path, output_path):
+    def copy_video_with_audio(original_video_path, processed_video_path, output_path):
         import shutil
-        if input_path != output_path:
-            shutil.copy2(input_path, output_path)
+        shutil.copy2(processed_video_path, output_path)
         return True
 
 # Tile utilities
@@ -391,6 +390,12 @@ def main():
         args.tile_dit = False
         args.tile_vae = False
     
+    # Automatically adjust too-small tile-size to avoid window attention errors
+    if args.tile_dit and args.tile_size < 128:
+        print(f"[WARNING] tile-size {args.tile_size} is too small and may cause window attention errors.")
+        print(f"[WARNING] Setting tile-size to 128 (minimum supported value).")
+        args.tile_size = 128
+
     # Create output directory
     if os.path.isdir(args.output):
         output_dir = args.output
@@ -478,16 +483,20 @@ def main():
     # Convert and save video
     frames = tensor2video(video)
     
-    # Save temporary video file (for audio merging)
+    # Save temporary video file (without audio)
     temp_output = output_path.replace('.mp4', '_temp.mp4')
     save_video(frames, temp_output, fps=fps, quality=args.quality)
+    print(f"[Video] Saved processed video without audio to: {temp_output}")
     
     # Audio handling
     if args.keep_audio and input_video_path and is_video(input_video_path):
         print(f"[Audio] Checking audio in input video...")
         if has_audio_stream(input_video_path):
             print(f"[Audio] Preserving audio from input video")
-            copy_video_with_audio(temp_output, output_path)
+            # Merge audio from original video with processed video
+            copy_video_with_audio(input_video_path, temp_output, output_path)
+            
+            # Clean up temp file
             if os.path.exists(temp_output):
                 os.remove(temp_output)
         else:
@@ -495,6 +504,7 @@ def main():
             if os.path.exists(temp_output):
                 os.rename(temp_output, output_path)
     else:
+        # No audio preservation requested or not a video file
         if os.path.exists(temp_output):
             if os.path.exists(output_path):
                 os.remove(output_path)

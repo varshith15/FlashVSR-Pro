@@ -1,9 +1,9 @@
-# Use base image that matches server CUDA version (12.8) and includes full development toolchain
+# 1. Use base image that matches server CUDA version (12.8) and includes full development toolchain
 FROM nvidia/cuda:12.8.1-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies
+# 2. Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     git \
@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Miniconda
+# 3. Install Miniconda
 WORKDIR /tmp
 RUN wget -O miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh \
     && bash miniconda.sh -b -p /opt/conda \
@@ -22,31 +22,31 @@ RUN wget -O miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-L
     && /opt/conda/bin/conda clean -ya
 ENV PATH="/opt/conda/bin:$PATH"
 
-# Accept Conda terms and create the target environment
+# 4. Accept Conda terms and create the target environment
 RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main \
     && conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 RUN conda create -n flashvsr python=3.11.13 -y
 
-# Subsequent commands run inside the flashvsr environment
+# 5. Subsequent commands run inside the flashvsr environment
 SHELL ["conda", "run", "-n", "flashvsr", "/bin/bash", "-c"]
 
-# Set workdir and copy project (model weights are excluded by .dockerignore)
+# 6. Set workdir and copy project (model weights are excluded by .dockerignore)
 WORKDIR /workspace/FlashVSR-Pro
 COPY . .
 
-# Create optional directories for mounted models and inputs
+# 7. Create optional directories for mounted models and inputs
 RUN mkdir -p /workspace/FlashVSR-Pro/models/FlashVSR \
     && mkdir -p /workspace/FlashVSR-Pro/models/FlashVSR-v1.1 \
     && mkdir -p /workspace/FlashVSR-Pro/inputs
 
-# 1. Install specific PyTorch build (important)
+# 8. Install specific PyTorch build (important)
 RUN pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
 
-# 2. Install FlashVSR core dependencies
+# 9. Install FlashVSR core dependencies
 RUN pip install -e . \
     && pip install -r requirements.txt modelscope
 
-# 3. Build and install Block-Sparse-Attention
+# 10. Build and install Block-Sparse-Attention
 WORKDIR /workspace/FlashVSR-Pro/Block-Sparse-Attention
 RUN pip install packaging ninja
 ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
@@ -66,20 +66,21 @@ RUN python setup.py install
 # from . import utils
 # EOF
 
-# Clean caches to reduce image size
+# 11. Clean caches to reduce image size
 RUN apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
     conda clean -ya && \
     pip cache purge
 
-# 5. Initialize git-lfs (prepare for runtime model downloads)
+# 12. Initialize git-lfs (prepare for runtime model downloads)
 WORKDIR /workspace/FlashVSR-Pro
 RUN git lfs install
 
-# Ensure entrypoint is executable (defensive)
+# 13. Ensure entrypoint is executable (defensive)
 RUN chmod +x entrypoint.sh
 
-# Set container entrypoint
-ENTRYPOINT ["entrypoint.sh"]
-# Default to interactive bash if no command provided
+# 14. Set container entrypoint
+ENTRYPOINT ["/workspace/FlashVSR-Pro/entrypoint.sh"]
+
+# 15. Default to interactive bash if no command provided
 CMD ["/bin/bash"]

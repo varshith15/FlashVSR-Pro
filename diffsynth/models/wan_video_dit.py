@@ -140,15 +140,40 @@ def generate_draft_block_mask(batch_size, nheads, seqlen,
     attn_map = torch.softmax(scores, dim=-1)
     attn_map = rearrange(attn_map, 'h (it s1) s2 -> (h it) s1 s2', it=seqlen)
     loop_num, s1, s2 = attn_map.shape
+    
+    # 特殊情况处理：如果 s1 或 s2 为 0，直接返回全 False 的 mask
+    if s1 == 0 or s2 == 0:
+        mask_new = torch.zeros((loop_num, s1, s2), dtype=torch.bool, device=attn_map.device)
+        mask_new = rearrange(mask_new, '(h it) s1 s2 -> h (it s1) s2', it=seqlen)
+        mask = mask_new.unsqueeze(0).repeat(batch_size, 1, 1, 1)
+        return mask
+    
     flat = attn_map.reshape(loop_num, -1)
     n = flat.shape[1]
-    apply_topk = min(flat.shape[1]-1, topk)
-    thresholds = torch.topk(flat, k=apply_topk + 1, dim=1, largest=True).values[:, -1]
-    thresholds = thresholds.unsqueeze(1)
+    
+    # 如果 n 太小，无法进行 topk 操作
+    if n <= 1:
+        # 对于非常小的 n，返回全 True 的 mask（允许所有注意力）
+        mask_new = torch.ones((loop_num, s1, s2), dtype=torch.bool, device=flat.device)
+        mask_new = rearrange(mask_new, '(h it) s1 s2 -> h (it s1) s2', it=seqlen)
+        mask = mask_new.unsqueeze(0).repeat(batch_size, 1, 1, 1)
+        return mask
+    
+    # 确保 topk 在合理范围内
+    apply_topk = min(n - 1, topk)
+    if apply_topk <= 0:
+        # 如果 apply_topk 为 0 或负数，使用一个简单的阈值
+        thresholds = flat.mean(dim=1, keepdim=True)
+    else:
+        # 确保 k 至少为 2（因为我们需要取 values[:, -1]）
+        k = apply_topk + 1
+        if k > n:
+            k = n
+        thresholds = torch.topk(flat, k=k, dim=1, largest=True).values[:, -1]
+        thresholds = thresholds.unsqueeze(1)
+    
     mask_new = (flat > thresholds).reshape(loop_num, s1, s2)
-    mask_new = rearrange(mask_new, '(h it) s1 s2 -> h (it s1) s2', it=seqlen)  # keep shape note
-    # 修正：上行变量名统一
-    # mask_new = rearrange(attn_map, 'h (it s1) s2 -> h (it s1) s2', it=seqlen) * 0 + mask_new
+    mask_new = rearrange(mask_new, '(h it) s1 s2 -> h (it s1) s2', it=seqlen)
     mask = mask_new.unsqueeze(0).repeat(batch_size, 1, 1, 1)
     return mask
 
