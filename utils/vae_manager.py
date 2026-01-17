@@ -26,19 +26,19 @@ class VAEManager:
     VAE_REGISTRY = {
         # Original Wan VAE variants (full mode)
         "wan2.1": {
-            "class": "WanVAE",  # Will be loaded via ModelManager
+            "class": "WanVAE",
             "default_path": "models/VAEs/Wan2.1_VAE.pth",
             "is_tcdecoder": False,
             "description": "Original Wan VAE 2.1, best quality but highest VRAM usage."
         },
         "wan2.2": {
-            "class": "WanVAE",  # Same class as wan2.1
+            "class": "WanVAE",
             "default_path": "models/VAEs/Wan2.2_VAE.pth",
             "is_tcdecoder": False,
             "description": "Wan VAE 2.2, improved version with better quality/speed balance."
         },
         "light": {
-            "class": "WanVAE",  # LightVAE uses same interface
+            "class": "WanVAE",
             "default_path": "models/VAEs/lightvaew2_1.pth",
             "is_tcdecoder": False,
             "description": "Lightweight Wan VAE, reduced VRAM usage for high-resolution processing."
@@ -46,13 +46,13 @@ class VAEManager:
         # TCDecoder variants (tiny mode)
         "tcd": {
             "class": "TAEW2_1DiffusersWrapper",
-            "default_path": None,  # Will use TCDecoder.ckpt from model directory
+            "default_path": None,
             "channels": [512, 256, 128, 128],
             "is_tcdecoder": True,
             "description": "Tiny Conditional Decoder for 'tiny' mode, fastest with moderate quality."
         },
         "tae-hv": {
-            "class": "TAEW2_1DiffusersWrapper",  # Similar wrapper for TAE-HV
+            "class": "TAEW2_1DiffusersWrapper",
             "default_path": "models/VAEs/lighttaehy1_5.pth",
             "channels": [256, 128, 64, 64],
             "is_tcdecoder": True,
@@ -228,6 +228,16 @@ class VAEManager:
                 
                 return decoded
             
+            def clear_cache(self):
+                """Clear cache - required by FlashVSRFullPipeline."""
+                if hasattr(self.tcd_model, 'clean_mem'):
+                    self.tcd_model.clean_mem()
+            
+            def clean_mem(self):
+                """Clean memory state - required by FlashVSR pipeline."""
+                if hasattr(self.tcd_model, 'clean_mem'):
+                    self.tcd_model.clean_mem()
+            
             def to(self, device=None, dtype=None):
                 """Move model to device/dtype."""
                 if device:
@@ -241,41 +251,225 @@ class VAEManager:
         return TCDecoderWrapper(tcdecoder, self.device, self.dtype)
     
     def _load_wan_vae(self,
-                     vae_type: str,
-                     config: Dict,
-                     weight_path: str,
-                     mode: str) -> nn.Module:
+                    vae_type: str,
+                    config: Dict,
+                    weight_path: str,
+                    mode: str) -> nn.Module:
         """Load Wan VAE type (for full mode)."""
-        # Import here to avoid circular imports
-        from diffsynth import ModelManager
-        
-        # Initialize ModelManager
-        mm = ModelManager(torch_dtype=self.dtype, device='cpu')
-        
-        # Load the VAE model
         if not weight_path or not os.path.exists(weight_path):
             raise FileNotFoundError(
                 f"VAE weight file not found: {weight_path}. "
                 f"Please download the {vae_type} weights."
             )
         
+        print(f"   [VAE Loader] Loading VAE from: {weight_path}")
+        
+        # 首先尝试通过 ModelManager 加载
+        from diffsynth import ModelManager
+        mm = ModelManager(torch_dtype=self.dtype, device='cpu')
+        
         try:
             mm.load_models([weight_path])
+            
+            # 检查是否成功加载
+            if hasattr(mm, 'model') and isinstance(mm.model, list) and len(mm.model) > 0:
+                # 成功通过 ModelManager 加载
+                vae_model = self._extract_vae_from_model_manager(mm)
+                print(f"   [VAE Loader] Successfully loaded via ModelManager")
+            else:
+                # ModelManager 无法识别，尝试直接加载
+                print(f"   [VAE Loader] ModelManager cannot detect model type, trying direct load...")
+                vae_model = self._load_vae_directly(weight_path, vae_type)
+            
+            # Move to target device and dtype
+            vae_model = vae_model.to(self.device).to(self.dtype)
+            
+            # Remove encoder to save memory
+            if hasattr(vae_model, 'encoder'):
+                vae_model.encoder = None
+                print(f"   [VAE Loader] Removed encoder to save memory")
+            if hasattr(vae_model, 'conv1'):
+                vae_model.conv1 = None
+            
+            print(f"   [VAE Loader] Successfully loaded VAE model")
+            return vae_model
+            
         except Exception as e:
-            raise RuntimeError(f"Failed to load VAE model from {weight_path}: {e}")
+            raise RuntimeError(
+                f"Failed to load VAE model from {weight_path}: {e}"
+            )
+    
+    def _load_vae_directly(self, weight_path: str, vae_type: str) -> nn.Module:
+        """直接加载VAE权重（当ModelManager无法识别时）"""
+        print(f"   [VAE Loader] Loading state_dict from: {weight_path}")
         
-        # Get the VAE model from ModelManager
-        # Note: This depends on diffsynth's internal structure
-        vae_model = mm.vae  # Adjust based on actual diffsynth API
+        # 加载权重文件
+        if weight_path.endswith('.safetensors'):
+            from safetensors.torch import load_file
+            checkpoint = load_file(weight_path, device='cpu')
+        else:
+            checkpoint = torch.load(weight_path, map_location='cpu', weights_only=False)
         
-        # Move to target device and dtype
-        vae_model = vae_model.to(self.device).to(self.dtype)
+        # 处理不同的权重文件格式
+        if isinstance(checkpoint, nn.Module):
+            # 直接是模型对象
+            print(f"   [VAE Loader] Loaded complete model object")
+            return checkpoint
         
-        # Remove encoder to save memory (as in original code)
-        if hasattr(vae_model, 'encoder'):
-            vae_model.encoder = None
-        if hasattr(vae_model, 'conv1'):
-            vae_model.conv1 = None
+        # 提取 state_dict
+        if 'state_dict' in checkpoint:
+            state_dict = checkpoint['state_dict']
+            print(f"   [VAE Loader] Found state_dict in checkpoint")
+        elif isinstance(checkpoint, dict):
+            # 可能整个文件就是 state_dict
+            state_dict = checkpoint
+            print(f"   [VAE Loader] Using checkpoint as state_dict")
+        else:
+            raise ValueError(f"Cannot extract state_dict from checkpoint")
+        
+        # 创建 VAE 架构
+        print(f"   [VAE Loader] Creating WanVideoVAE architecture using ModelManager...")
+        
+        # 使用 ModelManager 加载一个参考模型（如 wan2.1）来获取架构
+        # 然后用当前的 state_dict 覆盖权重
+        from diffsynth import ModelManager
+        
+        # 尝试从 wan2.1 获取架构作为模板
+        reference_vae_path = "models/VAEs/Wan2.1_VAE.pth"
+        
+        if os.path.exists(reference_vae_path):
+            print(f"   [VAE Loader] Using {reference_vae_path} as architecture template")
+            mm_temp = ModelManager(torch_dtype=self.dtype, device='cpu')
+            mm_temp.load_models([reference_vae_path])
+            
+            # 提取 VAE 架构
+            template_vae = self._extract_vae_from_model_manager(mm_temp)
+            print(f"   [VAE Loader] Got template VAE: {type(template_vae)}")
+            
+            # 使用当前的 state_dict 替换权重
+            print(f"   [VAE Loader] Loading weights into template architecture...")
+            missing_keys, unexpected_keys = template_vae.load_state_dict(state_dict, strict=False)
+            
+            if missing_keys:
+                print(f"   [VAE Loader] Warning: Missing keys: {len(missing_keys)} keys")
+                if len(missing_keys) < 10:
+                    print(f"   [VAE Loader] Missing: {missing_keys}")
+            if unexpected_keys:
+                print(f"   [VAE Loader] Warning: Unexpected keys: {len(unexpected_keys)} keys")
+                if len(unexpected_keys) < 10:
+                    print(f"   [VAE Loader] Unexpected: {unexpected_keys}")
+            
+            print(f"   [VAE Loader] Successfully loaded weights into WanVideoVAE")
+            return template_vae
+        else:
+            # 如果没有参考模型，尝试直接创建
+            print(f"   [VAE Loader] No reference VAE found, trying direct initialization...")
+            from diffsynth.models.wan_video_vae import WanVideoVAE
+            
+            # 尝试创建空的 VAE 实例
+            try:
+                vae_model = WanVideoVAE()
+                print(f"   [VAE Loader] Created WanVideoVAE with default parameters")
+            except Exception as e:
+                print(f"   [VAE Loader] Failed to create VAE: {e}")
+                
+                # 显示构造函数签名以便调试
+                import inspect
+                try:
+                    sig = inspect.signature(WanVideoVAE.__init__)
+                    print(f"   [VAE Loader] WanVideoVAE.__init__ signature: {sig}")
+                except:
+                    pass
+                
+                raise RuntimeError(
+                    f"Cannot initialize WanVideoVAE without reference model. "
+                    f"Please ensure Wan2.1_VAE.pth exists as a template, or check WanVideoVAE class definition."
+                )
+            
+            # 加载权重
+            missing_keys, unexpected_keys = vae_model.load_state_dict(state_dict, strict=False)
+            
+            if missing_keys:
+                print(f"   [VAE Loader] Warning: Missing keys: {len(missing_keys)} keys")
+            if unexpected_keys:
+                print(f"   [VAE Loader] Warning: Unexpected keys: {len(unexpected_keys)} keys")
+            
+            print(f"   [VAE Loader] Successfully created and loaded WanVideoVAE")
+            return vae_model
+    
+
+    
+    def _extract_vae_from_model_manager(self, mm):
+        """从ModelManager中提取VAE模型"""
+        # 尝试多种方式获取VAE
+        vae_model = None
+        
+        # 方法1: 尝试常见的属性名
+        possible_attrs = ['model', 'vae', 'video_vae', 'vae_model']
+        for attr in possible_attrs:
+            if hasattr(mm, attr):
+                candidate = getattr(mm, attr)
+                print(f"   [VAE Loader] Checking attribute '{attr}': type={type(candidate)}")
+                
+                # 如果是列表，尝试提取VAE
+                if isinstance(candidate, list):
+                    print(f"   [VAE Loader] List length: {len(candidate)}")
+                    if len(candidate) == 0:
+                        print(f"   [VAE Loader] Empty list, skipping...")
+                        continue
+                    
+                    # 遍历列表查找VAE
+                    for idx, item in enumerate(candidate):
+                        item_type = str(type(item)).lower()
+                        print(f"   [VAE Loader] List item {idx}: {type(item)}")
+                        if 'vae' in item_type or 'autoencoder' in item_type:
+                            vae_model = item
+                            print(f"   [VAE Loader] ✓ Selected VAE from list: {type(item)}")
+                            break
+                    
+                    # 如果没找到VAE但列表不为空，使用第一个
+                    if vae_model is None and len(candidate) > 0:
+                        vae_model = candidate[0]
+                        print(f"   [VAE Loader] Using first item in list: {type(vae_model)}")
+                else:
+                    # 不是列表，检查是否是VAE类型
+                    candidate_type = str(type(candidate)).lower()
+                    if 'vae' in candidate_type or 'autoencoder' in candidate_type:
+                        vae_model = candidate
+                        print(f"   [VAE Loader] ✓ Using attribute directly: {type(vae_model)}")
+                
+                if vae_model is not None:
+                    break
+        
+        # 方法2: 尝试从 models 字典中查找
+        if vae_model is None and hasattr(mm, 'models'):
+            print(f"   [VAE Loader] Searching in models dictionary...")
+            if isinstance(mm.models, dict):
+                print(f"   [VAE Loader] Models dict keys: {list(mm.models.keys())}")
+                for model_name, model in mm.models.items():
+                    model_type = str(type(model)).lower()
+                    print(f"   [VAE Loader] Model '{model_name}': {type(model)}")
+                    if 'vae' in model_type or 'autoencoder' in model_type:
+                        vae_model = model
+                        print(f"   [VAE Loader] ✓ Found VAE in models dict: {model_name}")
+                        break
+        
+        if vae_model is None:
+            # 提供更详细的调试信息
+            print(f"   [VAE Loader] Failed to find VAE. Debugging info:")
+            print(f"   [VAE Loader] - MM attributes: {[a for a in dir(mm) if not a.startswith('_')]}")
+            if hasattr(mm, 'model'):
+                print(f"   [VAE Loader] - mm.model type: {type(mm.model)}")
+                if isinstance(mm.model, list):
+                    print(f"   [VAE Loader] - mm.model length: {len(mm.model)}")
+            if hasattr(mm, 'models'):
+                print(f"   [VAE Loader] - mm.models type: {type(mm.models)}")
+                if isinstance(mm.models, dict):
+                    print(f"   [VAE Loader] - mm.models keys: {list(mm.models.keys())}")
+            
+            raise AttributeError(
+                f"Cannot find VAE model in ModelManager after loading."
+            )
         
         return vae_model
     

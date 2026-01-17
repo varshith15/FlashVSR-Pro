@@ -20,7 +20,7 @@ from .base import BasePipeline
 
 
 # -----------------------------
-# 基础工具：ADAIN 所需的统计量（保留以备需要；管线默认用 wavelet）
+# Basic tools: Statistics required by ADAIN (reserved for future use; pipeline defaults to wavelet)
 # -----------------------------
 def _calc_mean_std(feat: torch.Tensor, eps: float = 1e-5) -> Tuple[torch.Tensor, torch.Tensor]:
     assert feat.dim() == 4, 'feat 必须是 (N, C, H, W)'
