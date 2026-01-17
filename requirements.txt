@@ -25,3 +25,4 @@ tqdm
 datasets
 ffmpeg-python
 modelscope
+safetensors

@@ -1,7 +1,19 @@
 # config.yaml
 defaults:
   mode: "tiny"
+  vae_type: "wan2.1"  # Options: wan2.1, wan2.2, light, tcd, tae-hv, tae-w2.2
   scale: 2.0
   device: "cuda"
   tile_size: 256
   overlap: 24
+  tile_vae: false
+  tile_dit: false
+
+# VAE type descriptions for reference
+vae_descriptions:
+  wan2.1: "Original Wan VAE 2.1 - Best quality, highest VRAM"
+  wan2.2: "Wan VAE 2.2 - Improved quality/speed balance"
+  light: "Lightweight Wan VAE - Reduced VRAM for high-res"
+  tcd: "Tiny Conditional Decoder - Fastest, for 'tiny' mode"
+  tae-hv: "TAE-HV Decoder - Good balance for video"
+  tae-w2.2: "TAE W2.2 - Improved TAE-HV variant"

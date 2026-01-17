@@ -23,6 +23,7 @@ sys.path.append(current_dir)
 from diffsynth import ModelManager, FlashVSRFullPipeline, FlashVSRTinyPipeline, FlashVSRTinyLongPipeline
 from utils.utils import Causal_LQ4x_Proj
 from utils.TCDecoder import build_tcdecoder
+from utils.vae_manager import VAEManager
 
 # Optional audio utilities
 try:
@@ -71,6 +72,13 @@ def parse_args():
     parser.add_argument("--version", type=str, default="1.1",
                        choices=["1", "1.1"],
                        help="Model version")
+    
+    # VAE selection parameters
+    parser.add_argument("--vae-type", type=str, default="wan2.1",
+                       choices=["wan2.1", "wan2.2", "light", "tcd", "tae-hv", "tae-w2.2"],
+                       help="Select VAE decoder type for quality/VRAM trade-off")
+    parser.add_argument("--vae-path", type=str, default=None,
+                       help="Custom path to VAE weights file (overrides default)")
     
     # Tiling parameters
     parser.add_argument("--tile-dit", action="store_true",
@@ -307,41 +315,56 @@ def init_pipeline(args):
     }
     dtype = dtype_map.get(args.dtype, torch.bfloat16)
     
+    # Initialize VAE Manager
+    vae_manager = VAEManager(device=args.device, dtype=dtype)
+    
+    # Load specified VAE
+    vae_model = vae_manager.load_vae(
+        vae_type=args.vae_type,
+        custom_path=args.vae_path,
+        mode=args.mode,
+        tile_vae=args.tile_vae,
+        tile_size=args.tile_size,
+        overlap=args.overlap,
+        model_dir=model_dir
+    )
+
     # Initialize model manager
     mm = ModelManager(torch_dtype=dtype, device="cpu")
     
     # Load models based on mode
     if args.mode == "full":
-        mm.load_models([
-            f"{model_dir}/diffusion_pytorch_model_streaming_dmd.safetensors",
-            f"{model_dir}/Wan2.1_VAE.pth",
-        ])
+        # For full mode, load DiT model
+        dit_path = f"{model_dir}/diffusion_pytorch_model_streaming_dmd.safetensors"
+        mm.load_models([dit_path])
         pipe = FlashVSRFullPipeline.from_model_manager(mm, device=args.device)
-        pipe.vae.model.encoder = None
-        pipe.vae.model.conv1 = None
+        
+        # Replace VAE with selected one
+        pipe.vae = vae_model
     else:
-        mm.load_models([
-            f"{model_dir}/diffusion_pytorch_model_streaming_dmd.safetensors",
-        ])
+        # For tiny modes, load DiT model
+        dit_path = f"{model_dir}/diffusion_pytorch_model_streaming_dmd.safetensors"
+        mm.load_models([dit_path])
+        
+        # Check if selected VAE is compatible with tiny mode
+        vae_info = vae_manager.get_current_vae_info()
+        if not vae_info.get('is_tcdecoder', False):
+            print(f"[Warning] VAE type '{args.vae_type}' is not a TCDecoder variant.")
+            print(f"[Warning] For '{args.mode}' mode, using 'tcd' instead.")
+            args.vae_type = "tcd"
+            vae_model = vae_manager.load_vae(
+                vae_type="tcd",
+                mode=args.mode,
+                model_dir=model_dir
+            )
+        
         if args.mode == "tiny":
             pipe = FlashVSRTinyPipeline.from_model_manager(mm, device=args.device)
         else:  # tiny-long
             pipe = FlashVSRTinyLongPipeline.from_model_manager(mm, device=args.device)
         
-        # Load TCDecoder for tiny modes
-        multi_scale_channels = [512, 256, 128, 128]
-        pipe.TCDecoder = build_tcdecoder(
-            new_channels=multi_scale_channels, 
-            new_latent_channels=16+768
-        ).to(args.device, dtype=dtype)
-        
-        tcd_path = f"{model_dir}/TCDecoder.ckpt"
-        if os.path.exists(tcd_path):
-            mis = pipe.TCDecoder.load_state_dict(
-                torch.load(tcd_path, map_location="cpu"), 
-                strict=False
-            )
-            print(f"[TCDecoder] Loaded with missing keys: {mis.missing_keys}")
+        # Set TCDecoder
+        pipe.TCDecoder = vae_model
     
     # Load LQ projector
     pipe.denoising_model().LQ_proj_in = Causal_LQ4x_Proj(
@@ -351,7 +374,7 @@ def init_pipeline(args):
     lq_path = f"{model_dir}/LQ_proj_in.ckpt"
     if os.path.exists(lq_path):
         pipe.denoising_model().LQ_proj_in.load_state_dict(
-            torch.load(lq_path, map_location="cpu"), 
+            torch.load(lq_path, map_location="cpu"),
             strict=True
         )
     
@@ -361,7 +384,7 @@ def init_pipeline(args):
     pipe.init_cross_kv()
     pipe.load_models_to_device(["dit", "vae"])
     
-    return pipe
+    return pipe, vae_manager  # Return both pipe and vae_manager
 
 def main():
     args = parse_args()
@@ -423,8 +446,8 @@ def main():
         device=args.device
     )
     
-    # Initialize pipeline
-    pipe = init_pipeline(args)
+    # Initialize pipeline with VAE manager
+    pipe, vae_manager = init_pipeline(args)
     
     # Determine output file name
     input_name = os.path.basename(args.input.rstrip('/')).split('.')[0]
@@ -513,6 +536,7 @@ def main():
     print(f"[FlashVSR-Pro] Done! Output saved to: {output_path}")
 
     # Cleanup
+    vae_manager.clean_memory()
     del pipe
     torch.cuda.empty_cache()
 

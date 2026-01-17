@@ -34,37 +34,28 @@ SHELL ["conda", "run", "-n", "flashvsr", "/bin/bash", "-c"]
 WORKDIR /workspace/FlashVSR-Pro
 COPY . .
 
-# 7. Create optional directories for mounted models and inputs
+# 7. Create necessary directories for mounted models, VAE variants, and inputs
 RUN mkdir -p /workspace/FlashVSR-Pro/models/FlashVSR \
     && mkdir -p /workspace/FlashVSR-Pro/models/FlashVSR-v1.1 \
-    && mkdir -p /workspace/FlashVSR-Pro/inputs
+    && mkdir -p /workspace/FlashVSR-Pro/models/VAEs \
+    && mkdir -p /workspace/FlashVSR-Pro/models/prompt_tensor \
+    && mkdir -p /workspace/FlashVSR-Pro/inputs \
+    && mkdir -p /workspace/FlashVSR-Pro/results
 
 # 8. Install specific PyTorch build (important)
 RUN pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
 
 # 9. Install FlashVSR core dependencies
 RUN pip install -e . \
-    && pip install -r requirements.txt modelscope
+    && pip install -r requirements.txt
 
 # 10. Build and install Block-Sparse-Attention
+# This step automates the setup of the sparse attention kernel
 WORKDIR /workspace/FlashVSR-Pro/Block-Sparse-Attention
 RUN pip install packaging ninja
 ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+# Apply optimizations for better compatibility and performance
 RUN python setup.py install
-
-# # 4. Critical fix: patch block_sparse_attn package import issue (optional/manual step)
-# RUN cd /opt/conda/envs/flashvsr/lib/python3.11/site-packages/block_sparse_attn && \
-#     cat > __init__.py << 'EOF'
-# __version__ = "0.0.1"
-#
-# from block_sparse_attn.block_sparse_attn_interface import (
-#     block_sparse_attn_func,
-#     block_streaming_attn_func,
-#     token_streaming_attn_func
-# )
-#
-# from . import utils
-# EOF
 
 # 11. Clean caches to reduce image size
 RUN apt-get clean && \
