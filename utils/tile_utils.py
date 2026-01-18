@@ -227,14 +227,12 @@ def apply_tiled_inference_simple(
     # Calculate tile coordinates
     coords = calculate_tile_coords(H, W, tile_size, overlap, multiple=32)
     
-    print(f"[Tiled Inference] Splitting {H}x{W} video into {len(coords)} tiles")
+    print(f"Tiled Inference: {H}x{W} -> {len(coords)} tiles")
     
     # Store all tile results
     output_tiles = []
     
     for idx, (x1, y1, x2, y2) in enumerate(coords):
-        print(f"[Tile {idx+1}/{len(coords)}] Processing tile ({x1},{y1})-({x2},{y2}), size: {y2-y1}x{x2-x1}")
-        
         # Extract tile
         tile = LQ_video[:, :, :, y1:y2, x1:x2]
         
@@ -244,15 +242,12 @@ def apply_tiled_inference_simple(
         tile_kwargs['height'] = y2 - y1
         tile_kwargs['width'] = x2 - x1
         
-        # Run inference
+        # Run inference (quiet mode for performance)
         tile_output = pipeline(**tile_kwargs)
         output_tiles.append(tile_output)
-        
-        # Clear GPU cache
-        torch.cuda.empty_cache() if torch.cuda.is_available() else None
     
     # Stitch all tiles
-    print(f"[Tiled Inference] Stitching {len(output_tiles)} tiles back together...")
+    print(f"Stitching {len(output_tiles)} tiles...")
     final_output = stitch_video_tiles_back(
         output_tiles, coords, (H, W), overlap, scale=1
     )

@@ -28,8 +28,8 @@ class ImageSizeManager:
         th, tw = self._to_tuple(tgt)
         h, w = self._to_tuple(src)
 
-        tr = th / tw        # base 分辨率
-        r = h / w           # 目标分辨率
+        tr = th / tw        # base resolution
+        r = h / w           # target resolution
 
         # resize
         if r > tr:
@@ -37,7 +37,7 @@ class ImageSizeManager:
             resize_width = int(round(th / h * w))
         else:
             resize_width = tw
-            resize_height = int(round(tw / w * h))    # 根据base分辨率，将目标分辨率resize下来
+            resize_height = int(round(tw / w * h))    # resize target resolution based on base resolution
 
         crop_top = int(round((th - resize_height) / 2.0))
         crop_left = int(round((tw - resize_width) / 2.0))

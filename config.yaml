@@ -11,8 +11,8 @@ defaults:
 
 # VAE type descriptions for reference
 vae_descriptions:
-  wan2.1: "Original Wan VAE 2.1 - Best quality, highest VRAM"
-  wan2.2: "Wan VAE 2.2 - Improved quality/speed balance"
+  wan2.1: "Original Wan VAE 2.1 - High quality, moderate VRAM"
+  wan2.2: "Wan VAE 2.2 - Best quality, highest VRAM (H100 recommended)"
   light: "Lightweight Wan VAE - Reduced VRAM for high-res"
   tcd: "Tiny Conditional Decoder - Fastest, for 'tiny' mode"
   tae-hv: "TAE-HV Decoder - Good balance for video"

@@ -8,6 +8,8 @@ import time
 import argparse
 import warnings
 from pathlib import Path
+from contextlib import redirect_stdout, redirect_stderr
+import io
 
 import numpy as np
 from PIL import Image
@@ -68,15 +70,15 @@ def parse_args():
                        help="Output directory or file path")
     parser.add_argument("--mode", type=str, default="tiny", 
                        choices=["full", "tiny", "tiny-long"],
-                       help="Inference mode: full (with VAE), tiny (TCDecoder), tiny-long (for long videos)")
+                       help="Inference mode: full (with Wan VAE), tiny (with TCDecoder), tiny-long (for long videos)")
     parser.add_argument("--version", type=str, default="1.1",
                        choices=["1", "1.1"],
                        help="Model version")
     
     # VAE selection parameters
-    parser.add_argument("--vae-type", type=str, default="wan2.1",
+    parser.add_argument("--vae-type", type=str, default=None,
                        choices=["wan2.1", "wan2.2", "light", "tcd", "tae-hv", "tae-w2.2"],
-                       help="Select VAE decoder type for quality/VRAM trade-off")
+                       help="Select VAE decoder type (wan2.1/wan2.2/light for full mode, tcd/tae-hv/tae-w2.2 for tiny modes)")
     parser.add_argument("--vae-path", type=str, default=None,
                        help="Custom path to VAE weights file (overrides default)")
     
@@ -149,9 +151,9 @@ def is_video(path):
 
 def pil_to_tensor_neg1_1(img: Image.Image, dtype=torch.bfloat16, device='cuda'):
     """Convert PIL Image to tensor in range [-1, 1]"""
-    t = torch.from_numpy(np.asarray(img, np.uint8).copy()).to(device=device, dtype=torch.float32)
+    t = torch.from_numpy(np.asarray(img, np.uint8).copy()).to(device=device, dtype=dtype)
     t = t.permute(2,0,1) / 255.0 * 2.0 - 1.0  # CHW in [-1,1]
-    return t.to(dtype)
+    return t
 
 def save_video(frames, save_path, fps=30, quality=5):
     """Save frames as video"""
@@ -210,17 +212,17 @@ def prepare_input_tensor(path: str, scale: float = 2, dtype=torch.bfloat16, devi
         with Image.open(paths0[0]) as _img0:
             w0, h0 = _img0.size
         N0 = len(paths0)
-        print(f"[{os.path.basename(path)}] Original Resolution: {w0}x{h0} | Frames: {N0}")
+        print(f"Input: {w0}x{h0}, {N0} frames")
 
         sW, sH, tW, tH = compute_scaled_and_target_dims(w0, h0, scale=scale, multiple=128)
-        print(f"[{os.path.basename(path)}] Scaled (x{scale:.2f}): {sW}x{sH} -> Target: {tW}x{tH}")
+        print(f"Scaled: {sW}x{sH} -> {tW}x{tH}")
 
         paths = paths0 + [paths0[-1]] * 4
         F = largest_8n1_leq(len(paths))
         if F == 0:
             raise RuntimeError(f"Not enough frames after padding. Got {len(paths)}.")
         paths = paths[:F]
-        print(f"[{os.path.basename(path)}] Target Frames (8n-3): {F-4}")
+        print(f"Frames: {F-4} (padded to {F})")
 
         frames = []
         for p in paths:
@@ -269,10 +271,10 @@ def prepare_input_tensor(path: str, scale: float = 2, dtype=torch.bfloat16, devi
             rdr.close()
             raise RuntimeError(f"Cannot read frames from {path}")
 
-        print(f"[{os.path.basename(path)}] Original: {w0}x{h0} | Frames: {total} | FPS: {fps}")
+        print(f"Input: {w0}x{h0}, {total} frames, {fps} FPS")
 
         sW, sH, tW, tH = compute_scaled_and_target_dims(w0, h0, scale=scale, multiple=128)
-        print(f"[{os.path.basename(path)}] Scaled (x{scale:.2f}): {sW}x{sH} -> Target: {tW}x{tH}")
+        print(f"Scaled: {sW}x{sH} -> {tW}x{tH}")
 
         idx = list(range(total)) + [total-1] * 4
         F = largest_8n1_leq(len(idx))
@@ -280,7 +282,7 @@ def prepare_input_tensor(path: str, scale: float = 2, dtype=torch.bfloat16, devi
             rdr.close()
             raise RuntimeError(f"Not enough frames after padding. Got {len(idx)}.")
         idx = idx[:F]
-        print(f"[{os.path.basename(path)}] Target Frames (8n-3): {F-4}")
+        print(f"Frames: {F-4} (padded to {F})")
 
         frames = []
         try:
@@ -301,7 +303,7 @@ def prepare_input_tensor(path: str, scale: float = 2, dtype=torch.bfloat16, devi
 
 def init_pipeline(args):
     """Initialize pipeline based on mode and version"""
-    print(f"[Device] {torch.cuda.current_device()}, {torch.cuda.get_device_name(torch.cuda.current_device())}")
+    print(f"Device: {torch.cuda.current_device()}, {torch.cuda.get_device_name(torch.cuda.current_device())}")
     
     # Determine model path
     model_dir = os.getenv("FLASHVSR-Pro_MODEL_PATH", 
@@ -315,10 +317,8 @@ def init_pipeline(args):
     }
     dtype = dtype_map.get(args.dtype, torch.bfloat16)
     
-    # Initialize VAE Manager
+    # Initialize VAE Manager and load VAE
     vae_manager = VAEManager(device=args.device, dtype=dtype)
-    
-    # Load specified VAE
     vae_model = vae_manager.load_vae(
         vae_type=args.vae_type,
         custom_path=args.vae_path,
@@ -329,76 +329,75 @@ def init_pipeline(args):
         model_dir=model_dir
     )
 
-    # Initialize model manager
+    # Initialize model manager and load DiT model
     mm = ModelManager(torch_dtype=dtype, device="cpu")
+    dit_path = f"{model_dir}/diffusion_pytorch_model_streaming_dmd.safetensors"
     
-    # Load models based on mode
-    if args.mode == "full":
-        # For full mode, load DiT model
-        dit_path = f"{model_dir}/diffusion_pytorch_model_streaming_dmd.safetensors"
-        mm.load_models([dit_path])
-        pipe = FlashVSRFullPipeline.from_model_manager(mm, device=args.device)
-        
-        # Replace VAE with selected one
-        pipe.vae = vae_model
-    else:
-        # For tiny modes, load DiT model
-        dit_path = f"{model_dir}/diffusion_pytorch_model_streaming_dmd.safetensors"
+    # Create pipeline based on mode (suppress verbose output)
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
         mm.load_models([dit_path])
         
-        # Check if selected VAE is compatible with tiny mode
-        vae_info = vae_manager.get_current_vae_info()
-        if not vae_info.get('is_tcdecoder', False):
-            print(f"[Warning] VAE type '{args.vae_type}' is not a TCDecoder variant.")
-            print(f"[Warning] For '{args.mode}' mode, using 'tcd' instead.")
-            args.vae_type = "tcd"
-            vae_model = vae_manager.load_vae(
-                vae_type="tcd",
-                mode=args.mode,
-                model_dir=model_dir
-            )
-        
-        if args.mode == "tiny":
-            pipe = FlashVSRTinyPipeline.from_model_manager(mm, device=args.device)
-        else:  # tiny-long
-            pipe = FlashVSRTinyLongPipeline.from_model_manager(mm, device=args.device)
-        
-        # Set TCDecoder
-        pipe.TCDecoder = vae_model
+        if args.mode == "full":
+            pipe = FlashVSRFullPipeline.from_model_manager(mm, device=args.device)
+            pipe.vae = vae_model
+        else:  # tiny or tiny-long
+            if args.mode == "tiny":
+                pipe = FlashVSRTinyPipeline.from_model_manager(mm, device=args.device)
+            else:  # tiny-long
+                pipe = FlashVSRTinyLongPipeline.from_model_manager(mm, device=args.device)
+            pipe.TCDecoder = vae_model
     
-    # Load LQ projector
-    pipe.denoising_model().LQ_proj_in = Causal_LQ4x_Proj(
-        in_dim=3, out_dim=1536, layer_num=1
-    ).to(args.device, dtype=dtype)
-    
+    # Load and setup LQ projector efficiently
+    lq_proj = Causal_LQ4x_Proj(in_dim=3, out_dim=1536, layer_num=1)
     lq_path = f"{model_dir}/LQ_proj_in.ckpt"
     if os.path.exists(lq_path):
-        pipe.denoising_model().LQ_proj_in.load_state_dict(
-            torch.load(lq_path, map_location="cpu"),
-            strict=True
-        )
+        lq_proj.load_state_dict(torch.load(lq_path, map_location="cpu"), strict=True)
     
-    pipe.denoising_model().LQ_proj_in.to(args.device)
+    # Move to device and setup pipeline (combined operations)
+    pipe.denoising_model().LQ_proj_in = lq_proj.to(args.device, dtype=dtype)
     pipe.to(args.device)
     pipe.enable_vram_management(num_persistent_param_in_dit=None)
     pipe.init_cross_kv()
     pipe.load_models_to_device(["dit", "vae"])
     
-    return pipe, vae_manager  # Return both pipe and vae_manager
+    return pipe, vae_manager
 
 def main():
     args = parse_args()
 
-    # Check device availability
-    if args.device == "cuda" and not torch.cuda.is_available():
-        print("[WARNING] CUDA not available, falling back to CPU")
-        args.device = "cpu"
+    # Set default VAE based on mode if not specified
+    if args.vae_type is None:
+        if args.mode == "full":
+            args.vae_type = "wan2.1"
+        else:  # tiny or tiny-long
+            args.vae_type = "tcd"
+
+    # Validate VAE compatibility with mode (cache registry to avoid repeated imports)
+    vae_registry = VAEManager.VAE_REGISTRY
+    is_tcdecoder = vae_registry[args.vae_type]["is_tcdecoder"]
     
-    # Check GPU memory
-    if args.device == "cuda" and not args.tile_dit:
-        free_mem = torch.cuda.get_device_properties(0).total_memory / 1e9
-        if free_mem < 8:  # less than 8GB
-            print(f"[WARNING] Low GPU memory ({free_mem:.1f}GB), consider using --tile-dit")
+    if args.mode == "full" and is_tcdecoder:
+        print(f"[Warning] VAE type '{args.vae_type}' is not compatible with 'full' mode.")
+        print(f"[Warning] Automatically switching to default VAE 'wan2.1' for full mode.")
+        args.vae_type = "wan2.1"
+        is_tcdecoder = False  # Update flag
+    elif args.mode in ["tiny", "tiny-long"] and not is_tcdecoder:
+        print(f"[Warning] VAE type '{args.vae_type}' is not compatible with '{args.mode}' mode.")
+        print(f"[Warning] Automatically switching to default VAE 'tcd' for {args.mode} mode.")
+        args.vae_type = "tcd"
+        is_tcdecoder = True  # Update flag
+
+    # Combined device and memory checks
+    if args.device == "cuda":
+        if not torch.cuda.is_available():
+            print("[WARNING] CUDA not available, falling back to CPU")
+            args.device = "cpu"
+        else:
+            # Check GPU memory only if CUDA is available and not using tile-dit
+            if not args.tile_dit:
+                free_mem = torch.cuda.get_device_properties(0).total_memory / 1e9
+                if free_mem < 8:  # less than 8GB
+                    print(f"[WARNING] Low GPU memory ({free_mem:.1f}GB), consider using --tile-dit")
     
     # Check audio utility availability
     if args.keep_audio and not AUDIO_AVAILABLE:
@@ -429,7 +428,7 @@ def main():
             os.makedirs(output_dir, exist_ok=True)
     
     # Prepare input
-    print(f"[FlashVSR-Pro] Processing: {args.input}")
+    print(f"Processing: {args.input}")
     
     # Set dtype
     if args.dtype == "fp16":
@@ -457,7 +456,7 @@ def main():
     else:
         output_path = args.output
     
-    print(f"[Output] Will save to: {output_path}")
+    print(f"Output: {output_path}")
     
     # Prepare pipeline parameters
     pipeline_kwargs = {
@@ -484,7 +483,7 @@ def main():
     
     # Run inference (tiled or standard)
     if args.tile_dit:
-        print(f"[Tiled DiT] Enabled with tile_size={args.tile_size}, overlap={args.overlap}")
+        print(f"Tiled DiT: tile_size={args.tile_size}, overlap={args.overlap}")
         
         # Create a copy of pipeline_kwargs and remove LQ_video
         tile_kwargs = pipeline_kwargs.copy()
@@ -499,8 +498,7 @@ def main():
             **tile_kwargs
         )
     else:
-        # Standard inference
-        print("[FlashVSR-Pro] Running standard inference...")
+        print("Running inference...")
         video = pipe(**pipeline_kwargs)
     
     # Convert and save video
@@ -509,13 +507,12 @@ def main():
     # Save temporary video file (without audio)
     temp_output = output_path.replace('.mp4', '_temp.mp4')
     save_video(frames, temp_output, fps=fps, quality=args.quality)
-    print(f"[Video] Saved processed video without audio to: {temp_output}")
+    print(f"Video saved: {temp_output}")
     
     # Audio handling
     if args.keep_audio and input_video_path and is_video(input_video_path):
-        print(f"[Audio] Checking audio in input video...")
         if has_audio_stream(input_video_path):
-            print(f"[Audio] Preserving audio from input video")
+            print("Preserving audio...")
             # Merge audio from original video with processed video
             copy_video_with_audio(input_video_path, temp_output, output_path)
             
@@ -523,7 +520,7 @@ def main():
             if os.path.exists(temp_output):
                 os.remove(temp_output)
         else:
-            print(f"[Audio] No audio found in input video, saving silent video")
+            print("No audio found, saving silent video")
             if os.path.exists(temp_output):
                 os.rename(temp_output, output_path)
     else:
@@ -533,7 +530,7 @@ def main():
                 os.remove(output_path)
             os.rename(temp_output, output_path)
 
-    print(f"[FlashVSR-Pro] Done! Output saved to: {output_path}")
+    print(f"Done! Output: {output_path}")
 
     # Cleanup
     vae_manager.clean_memory()

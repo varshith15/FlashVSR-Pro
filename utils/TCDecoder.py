@@ -175,13 +175,15 @@ class TAEHV(nn.Module):
         decoder_time_upscale=(True, True),
         decoder_space_upscale=(True, True, True),
         channels = [256, 128, 64, 64],
-        latent_channels = 16
+        latent_channels = 16,
+        output_channels = 3
     ):
         """Initialize TAEHV (decoder-only) with built-in deepening after every ReLU.
         Deepening config: how_many_each=1, k=3 (fixed as requested).
         """
         super().__init__()
         self.latent_channels = latent_channels
+        self.image_channels = output_channels
         n_f = channels
         self.frames_to_trim = 2**sum(decoder_time_upscale) - 1
 
@@ -204,11 +206,17 @@ class TAEHV(nn.Module):
             TGrow(n_f[2], 2 if decoder_time_upscale[1] else 1),
             conv(n_f[2], n_f[3], bias=False),
 
-            nn.ReLU(inplace=True), conv(n_f[3], TAEHV.image_channels),
+            nn.ReLU(inplace=True), conv(n_f[3], self.image_channels),
         )
 
         # Inline deepening: insert (IdentityConv2d(k=3) + ReLU) after every ReLU
-        self.decoder = self._apply_identity_deepen(base_decoder, how_many_each=1, k=3)
+        # For external weight loading, we may need to match the checkpoint structure
+        if checkpoint_path is not None:
+            # When loading external weights, don't apply deepening to match checkpoint structure
+            self.decoder = base_decoder
+        else:
+            # When not loading external weights, apply deepening as designed
+            self.decoder = self._apply_identity_deepen(base_decoder, how_many_each=1, k=3)
 
         self.pixel_shuffle = PixelShuffle3d(4, 8, 8)
 
@@ -220,6 +228,68 @@ class TAEHV(nn.Module):
             print('missing_keys', missing_keys)
 
         # Initialize decoder mem state
+        self.mem = [None] * len(self.decoder)
+
+    def _rebuild_decoder(self, channels, latent_channels, vae_type=None):
+        """Rebuild decoder with new channels and latent_channels (for external weight loading)."""
+        self.latent_channels = latent_channels
+        n_f = channels
+        self.frames_to_trim = 2**sum((True, True)) - 1  # Default time upscale
+
+        if vae_type == "tae-w2.2":
+            # Special structure for tae-w2.2 checkpoint
+            base_decoder = nn.Sequential(
+                nn.Identity(),  # 0
+                conv(self.latent_channels, 256),  # 1
+                nn.Identity(),  # 2
+                MemBlock(256, 256),  # 3
+                MemBlock(256, 256),  # 4
+                MemBlock(256, 256),  # 5
+                nn.Identity(),  # 6
+                TGrow(256, 1),  # 7
+                conv(256, 128, bias=False),  # 8
+                MemBlock(128, 128),  # 9
+                MemBlock(128, 128),  # 10
+                MemBlock(128, 128),  # 11
+                nn.Identity(),  # 12
+                TGrow(128, 2),  # 13
+                conv(128, 64, bias=False),  # 14
+                MemBlock(64, 64),  # 15
+                MemBlock(64, 64),  # 16
+                MemBlock(64, 64),  # 17
+                nn.Identity(),  # 18
+                TGrow(64, 2),  # 19
+                conv(64, 64, bias=False),  # 20
+                nn.Identity(),  # 21
+                conv(64, self.image_channels),  # 22
+            )
+        else:
+            # Default structure
+            base_decoder = nn.Sequential(
+                Clamp(), conv(self.latent_channels, n_f[0]), nn.ReLU(inplace=True),
+
+                MemBlock(n_f[0], n_f[0]), MemBlock(n_f[0], n_f[0]), MemBlock(n_f[0], n_f[0]),
+                nn.Upsample(scale_factor=2),
+                TGrow(n_f[0], 1),
+                conv(n_f[0], n_f[1], bias=False),
+
+                MemBlock(n_f[1], n_f[1]), MemBlock(n_f[1], n_f[1]), MemBlock(n_f[1], n_f[1]),
+                nn.Upsample(scale_factor=2),
+                TGrow(n_f[1], 2),
+                conv(n_f[1], n_f[2], bias=False),
+
+                MemBlock(n_f[2], n_f[2]), MemBlock(n_f[2], n_f[2]), MemBlock(n_f[2], n_f[2]),
+                nn.Upsample(scale_factor=2),
+                TGrow(n_f[2], 2),
+                conv(n_f[2], n_f[3], bias=False),
+
+                nn.ReLU(inplace=True), conv(n_f[3], self.image_channels),
+            )
+
+        # For external weight loading, don't apply deepening to match checkpoint structure
+        self.decoder = base_decoder
+        
+        # Reinitialize mem state
         self.mem = [None] * len(self.decoder)
 
     @staticmethod
@@ -277,11 +347,11 @@ class DotDict(dict):
     __setattr__ = dict.__setitem__
 
 class TAEW2_1DiffusersWrapper(nn.Module):
-    def __init__(self, pretrained_path=None, channels = [256, 128, 64, 64]):
+    def __init__(self, pretrained_path=None, channels = [256, 128, 64, 64], output_channels=3):
         super().__init__()
         self.dtype = torch.bfloat16
         self.device = "cuda"
-        self.taehv = TAEHV(pretrained_path, channels = channels).to(self.dtype)
+        self.taehv = TAEHV(pretrained_path, channels = channels, output_channels=output_channels).to(self.dtype)
         self.temperal_downsample = [True, True, False]  # [sic]
         self.config = DotDict(scaling_factor=1.0, latents_mean=torch.zeros(16), z_dim=16, latents_std=torch.ones(16))
 
