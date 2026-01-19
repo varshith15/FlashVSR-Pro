@@ -431,6 +431,201 @@ class FlashVSRTinyPipeline(BasePipeline):
 
         return frames[0]
 
+    @torch.no_grad()
+    def stream(
+        self,
+        chunk,
+        height=480,
+        width=832,
+        seed=None,
+        topk_ratio=2.0,
+        kv_ratio=3.0,
+        local_range=9,
+        color_fix=True,
+    ):
+        # Check initialization
+        if self.prompt_emb_posi is None or 'context' not in self.prompt_emb_posi:
+            raise RuntimeError(
+                "Cross-Attn KV 未初始化。请在调用 __call__ 前先执行：\n"
+                "    pipe.init_cross_kv()\n"
+                "或传入自定义 context：\n"
+                "    pipe.init_cross_kv(context_tensor=your_context_tensor)"
+            )
+
+        # Dimensions
+        height, width = self.check_resize_height_width(height, width)
+        
+        # Determine behavior based on chunk size
+        num_frames = chunk.shape[2]
+        
+        if num_frames == 25:
+            # ---------------------------
+            # First Chunk / Warmup / Reset
+            # ---------------------------
+            # Reset states
+            if hasattr(self.dit, "LQ_proj_in"):
+                self.dit.LQ_proj_in.clear_cache()
+            self.TCDecoder.clean_mem()
+            
+            self.pre_cache_k = [None] * len(self.dit.blocks)
+            self.pre_cache_v = [None] * len(self.dit.blocks)
+            self.cur_process_idx = 0
+            
+            # 1. Process Input Video (LQ_latents)
+            LQ_latents = None
+            inner_loop_num = 7
+            for inner_idx in range(inner_loop_num):
+                # Indices: 0:1, 1:5, 5:9, ..., 21:25
+                start = max(0, inner_idx * 4 - 3)
+                end = (inner_idx + 1) * 4 - 3
+                
+                cur = self.denoising_model().LQ_proj_in.stream_forward(
+                    chunk[:, :, start:end, :, :]
+                )
+                if cur is None: continue
+                
+                if LQ_latents is None:
+                    LQ_latents = cur
+                else:
+                    for layer_idx in range(len(LQ_latents)):
+                        LQ_latents[layer_idx] = torch.cat([LQ_latents[layer_idx], cur[layer_idx]], dim=1)
+            
+            # 2. Generate Noise (Latents)
+            # Shape: (1, 16, 6, H/8, W/8)
+            cur_latents = self.generate_noise(
+                (1, 16, 6, height//8, width//8), 
+                seed=seed, 
+                device=self.device, 
+                dtype=self.torch_dtype
+            )
+            
+            # 3. Model Inference
+            noise_pred_posi, self.pre_cache_k, self.pre_cache_v = model_fn_wan_video(
+                self.dit,
+                x=cur_latents,
+                timestep=self.timestep,
+                context=None,
+                tea_cache=None,
+                use_unified_sequence_parallel=False,
+                LQ_latents=LQ_latents,
+                is_full_block=False,
+                is_stream=True,
+                pre_cache_k=self.pre_cache_k,
+                pre_cache_v=self.pre_cache_v,
+                topk_ratio=topk_ratio,
+                kv_ratio=kv_ratio,
+                cur_process_idx=0,
+                t_mod=self.t_mod,
+                t=self.t,
+                local_range=local_range,
+            )
+            
+            cur_latents = cur_latents - noise_pred_posi
+            
+            # 4. Decode
+            # Use frames 0-21 as condition
+            cond = chunk[:, :, :21, :, :]
+            chunk_frames = self.TCDecoder.decode_video(
+                cur_latents.transpose(1, 2),
+                parallel=False, 
+                show_progress_bar=False, 
+                cond=cond
+            ).transpose(1, 2).mul_(2).sub_(1)
+            
+            # Update state
+            self.prev_chunk_tail = chunk[:, :, -4:, :, :] # Save last 4 frames
+            self.cur_process_idx = 1
+            
+        elif num_frames == 8:
+            # ---------------------------
+            # Subsequent Chunks
+            # ---------------------------
+            
+            # 1. Process Input Video (LQ_latents)
+            LQ_latents = None
+            inner_loop_num = 2
+            for inner_idx in range(inner_loop_num):
+                # Indices: 0:4, 4:8
+                start = inner_idx * 4
+                end = (inner_idx + 1) * 4
+                
+                cur = self.denoising_model().LQ_proj_in.stream_forward(
+                    chunk[:, :, start:end, :, :]
+                )
+                if cur is None: continue
+                
+                if LQ_latents is None:
+                    LQ_latents = cur
+                else:
+                    for layer_idx in range(len(LQ_latents)):
+                        LQ_latents[layer_idx] = torch.cat([LQ_latents[layer_idx], cur[layer_idx]], dim=1)
+                        
+            # 2. Generate Noise (Latents)
+            # Shape: (1, 16, 2, H/8, W/8)
+            cur_latents = self.generate_noise(
+                (1, 16, 2, height//8, width//8), 
+                seed=seed, 
+                device=self.device, 
+                dtype=self.torch_dtype
+            )
+            
+            # 3. Model Inference
+            noise_pred_posi, self.pre_cache_k, self.pre_cache_v = model_fn_wan_video(
+                self.dit,
+                x=cur_latents,
+                timestep=self.timestep,
+                context=None,
+                tea_cache=None,
+                use_unified_sequence_parallel=False,
+                LQ_latents=LQ_latents,
+                is_full_block=False,
+                is_stream=True,
+                pre_cache_k=self.pre_cache_k,
+                pre_cache_v=self.pre_cache_v,
+                topk_ratio=topk_ratio,
+                kv_ratio=kv_ratio,
+                cur_process_idx=self.cur_process_idx,
+                t_mod=self.t_mod,
+                t=self.t,
+                local_range=local_range,
+            )
+            
+            cur_latents = cur_latents - noise_pred_posi
+            
+            # 4. Decode
+            # cond = last 4 of prev + first 4 of curr = 8 frames
+            cond = torch.cat([self.prev_chunk_tail, chunk[:, :, :4, :, :]], dim=2)
+            
+            chunk_frames = self.TCDecoder.decode_video(
+                cur_latents.transpose(1, 2),
+                parallel=False, 
+                show_progress_bar=False, 
+                cond=cond
+            ).transpose(1, 2).mul_(2).sub_(1)
+            
+            # Update state
+            self.prev_chunk_tail = chunk[:, :, -4:, :, :]
+            self.cur_process_idx += 1
+
+        else:
+            raise ValueError(f"Stream chunk size must be 25 (reset/start) or 8 (continue). Got {num_frames}.")
+
+        # 5. Color Correction
+        if color_fix:
+            try:
+                # Use cond as reference for color correction
+                chunk_frames = self.ColorCorrector(
+                    chunk_frames.to(device=chunk.device),
+                    cond,
+                    clip_range=(-1, 1),
+                    chunk_size=16,
+                    method='adain'
+                )
+            except Exception:
+                pass
+        
+        return chunk_frames
+
 
 # -----------------------------
 # TeaCache（保留原逻辑；此处默认不启用）

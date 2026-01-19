@@ -1,8 +1,8 @@
-torch==2.6.0+cu124
-torchaudio==2.6.0+cu124
-torchmetrics==1.7.3
-torchsde==0.2.6
-torchvision==0.21.0+cu124
+torch==2.9.1+cu128
+torchaudio==2.9.1+cu128
+torchmetrics
+torchsde
+torchvision==0.24.1+cu128
 accelerate==1.8.1
 einops==0.8.1
 huggingface-hub==0.34.4
