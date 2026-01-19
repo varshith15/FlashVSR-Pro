@@ -333,19 +333,20 @@ def init_pipeline(args):
     mm = ModelManager(torch_dtype=dtype, device="cpu")
     dit_path = f"{model_dir}/diffusion_pytorch_model_streaming_dmd.safetensors"
     
-    # Create pipeline based on mode (suppress verbose output)
+    # Load DiT model (suppress verbose output)
     with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
         mm.load_models([dit_path])
-        
-        if args.mode == "full":
-            pipe = FlashVSRFullPipeline.from_model_manager(mm, device=args.device)
-            pipe.vae = vae_model
-        else:  # tiny or tiny-long
-            if args.mode == "tiny":
-                pipe = FlashVSRTinyPipeline.from_model_manager(mm, device=args.device)
-            else:  # tiny-long
-                pipe = FlashVSRTinyLongPipeline.from_model_manager(mm, device=args.device)
-            pipe.TCDecoder = vae_model
+
+    # Create pipeline based on mode (allow welcome message to show)
+    if args.mode == "full":
+        pipe = FlashVSRFullPipeline.from_model_manager(mm, device=args.device)
+        pipe.vae = vae_model
+    else:  # tiny or tiny-long
+        if args.mode == "tiny":
+            pipe = FlashVSRTinyPipeline.from_model_manager(mm, device=args.device)
+        else:  # tiny-long
+            pipe = FlashVSRTinyLongPipeline.from_model_manager(mm, device=args.device)
+        pipe.TCDecoder = vae_model
     
     # Load and setup LQ projector efficiently
     lq_proj = Causal_LQ4x_Proj(in_dim=3, out_dim=1536, layer_num=1)
