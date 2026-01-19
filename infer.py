@@ -495,9 +495,11 @@ def main():
         pipeline_kwargs["tiled"] = True
     
     # Run inference (tiled or standard)
+    inference_start_time = time.time()
+
     if args.tile_dit:
         print(f"Tiled DiT: tile_size={args.tile_size}, overlap={args.overlap}")
-        
+
         # Create a copy of pipeline_kwargs and remove LQ_video
         tile_kwargs = pipeline_kwargs.copy()
         tile_kwargs.pop('LQ_video', None)  # Remove LQ_video because it's already passed as a positional argument
@@ -513,6 +515,10 @@ def main():
     else:
         print("Running inference...")
         video = pipe(**pipeline_kwargs)
+
+    inference_end_time = time.time()
+    inference_duration = inference_end_time - inference_start_time
+    print(f"Inference completed in {inference_duration:.2f} seconds")
     
     # Convert and save video
     frames = tensor2video(video)
