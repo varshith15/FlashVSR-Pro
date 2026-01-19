@@ -23,8 +23,8 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 
 from diffsynth import ModelManager, FlashVSRFullPipeline, FlashVSRTinyPipeline, FlashVSRTinyLongPipeline
-from utils.utils import Causal_LQ4x_Proj
-from utils.TCDecoder import build_tcdecoder
+from utils.core.utils import Causal_LQ4x_Proj
+from utils.core.TCDecoder import build_tcdecoder
 from utils.vae import vae_system
 
 # Optional audio utilities
