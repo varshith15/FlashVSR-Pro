@@ -26,13 +26,13 @@ class VAEManager:
             "class": "WanVAE",
             "default_path": "models/VAEs/Wan2.1_VAE.pth",
             "is_tcdecoder": False,
-            "description": "Original Wan VAE 2.1 - Best quality, highest VRAM"
+            "description": "Original Wan VAE 2.1 - High quality, moderate VRAM"
         },
         "wan2.2": {
             "class": "WanVAE",
             "default_path": "models/VAEs/Wan2.2_VAE.pth",
             "is_tcdecoder": False,
-            "description": "Wan VAE 2.2 - Improved quality/speed balance"
+            "description": "Wan VAE 2.2 - Best quality, highest VRAM"
         },
         "light": {
             "class": "WanVAE",
