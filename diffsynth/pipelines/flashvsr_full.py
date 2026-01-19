@@ -164,16 +164,6 @@ class FlashVSRFullPipeline(BasePipeline):
         self.prompt_emb_posi = None
         self.ColorCorrector = TorchColorCorrectorWavelet(levels=5)
 
-        print(r"""
-███████╗██╗      █████╗ ███████╗██╗  ██╗██╗   ██╗███████╗█████╗           ██████╗ █████╗   ██████╗ 
-██╔════╝██║     ██╔══██╗██╔════╝██║  ██║██║   ██║██╔════╝██╔══██╗         ██╔══██╗██╔══██╗██╔═══██╗
-█████╗  ██║     ███████║███████╗███████║╚██╗ ██╔╝███████╗███████║ ██████╗ ██████╔╝███████║██║   ██║
-██╔══╝  ██║     ██╔══██║╚════██║██╔══██║ ╚████╔╝ ╚════██║██╔═██║  ╚═════╝ ██╔═══╝ ██╔═██║ ██║   ██║ 
-██║     ███████╗██║  ██║███████║██║  ██║  ╚██╔╝  ███████║██║  ██║         ██║     ██║  ██║╚██████╔╝
-╚═╝     ╚══════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝         ╚═╝     ╚═╝  ╚═╝ ╚═════╝ 
-                    ⚡FlashVSR-Pro: Enhanced Real-Time Video Super-Resolution
-""")
-
     def enable_vram_management(self, num_persistent_param_in_dit=None):
         # 仅管理 dit / vae
         dtype = next(iter(self.dit.parameters())).dtype
