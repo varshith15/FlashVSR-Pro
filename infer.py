@@ -25,20 +25,20 @@ sys.path.append(current_dir)
 from diffsynth import ModelManager, FlashVSRFullPipeline, FlashVSRTinyPipeline, FlashVSRTinyLongPipeline
 from utils.utils import Causal_LQ4x_Proj
 from utils.TCDecoder import build_tcdecoder
-from utils.vae_manager import VAEManager
+from utils.vae import vae_system
 
 # Optional audio utilities
 try:
-    from utils.audio_utils import copy_video_with_audio, has_audio_stream
+    from utils.processing.audio_utils import copy_video_with_audio, has_audio_stream
     AUDIO_AVAILABLE = True
 except ImportError as e:
     AUDIO_AVAILABLE = False
     warnings.warn(f"Audio utilities not available: {e}")
-    
+
     # Provide simple fallback functions
     def has_audio_stream(path):
         return False
-    
+
     def copy_video_with_audio(original_video_path, processed_video_path, output_path):
         import shutil
         shutil.copy2(processed_video_path, output_path)
@@ -46,16 +46,16 @@ except ImportError as e:
 
 # Tile utilities
 try:
-    from utils.tile_utils import calculate_tile_coords, apply_tiled_inference_simple
+    from utils.processing.tile_utils import calculate_tile_coords, apply_tiled_inference_simple
     TILE_AVAILABLE = True
 except ImportError as e:
     TILE_AVAILABLE = False
     warnings.warn(f"Tile utilities not available: {e}")
-    
+
     # Provide simple fallback functions
     def calculate_tile_coords(height, width, tile_size, overlap):
         return [(0, 0, width, height)]
-    
+
     def apply_tiled_inference_simple(pipeline, LQ_video, tile_size=256, overlap=24, **pipeline_kwargs):
         # No tiling, call pipeline directly
         return pipeline(**pipeline_kwargs)
@@ -318,7 +318,7 @@ def init_pipeline(args):
     dtype = dtype_map.get(args.dtype, torch.bfloat16)
     
     # Initialize VAE Manager and load VAE
-    vae_manager = VAEManager(device=args.device, dtype=dtype)
+    vae_manager = vae_system.VAESystem(device=args.device, dtype=dtype)
     vae_model = vae_manager.load_vae(
         vae_type=args.vae_type,
         custom_path=args.vae_path,
@@ -364,6 +364,17 @@ def init_pipeline(args):
     return pipe, vae_manager
 
 def main():
+    # Display FlashVSR-Pro welcome banner at the very beginning
+    print(r"""
+███████╗██╗      █████╗ ███████╗██╗  ██╗██╗   ██╗███████╗█████╗           ██████╗ █████╗   ██████╗
+██╔════╝██║     ██╔══██╗██╔════╝██║  ██║██║   ██║██╔════╝██╔══██╗         ██╔══██╗██╔══██╗██╔═══██╗
+█████╗  ██║     ███████║███████╗███████║╚██╗ ██╔╝███████╗███████║ ██████╗ ██████╔╝███████║██║   ██║
+██╔══╝  ██║     ██╔══██║╚════██║██╔══██║ ╚████╔╝ ╚════██║██╔═██║  ╚═════╝ ██╔═══╝ ██╔═██║ ██║   ██║
+██║     ███████╗██║  ██║███████║██║  ██║  ╚██╔╝  ███████║██║  ██║         ██║     ██║  ██║╚██████╔╝
+╚═╝     ╚══════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝         ╚═╝     ╚═╝  ╚═╝ ╚═════╝
+                    ⚡FlashVSR-Pro: Enhanced Real-Time Video Super-Resolution
+""")
+
     args = parse_args()
 
     # Set default VAE based on mode if not specified
@@ -374,7 +385,7 @@ def main():
             args.vae_type = "tcd"
 
     # Validate VAE compatibility with mode (cache registry to avoid repeated imports)
-    vae_registry = VAEManager.VAE_REGISTRY
+    vae_registry = vae_system.VAESystem.VAE_CONFIGS
     is_tcdecoder = vae_registry[args.vae_type]["is_tcdecoder"]
     
     if args.mode == "full" and is_tcdecoder:
