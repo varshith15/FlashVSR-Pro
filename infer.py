@@ -157,8 +157,15 @@ def pil_to_tensor_neg1_1(img: Image.Image, dtype=torch.bfloat16, device='cuda'):
 
 def save_video(frames, save_path, fps=30, quality=5):
     """Save frames as video"""
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    w = imageio.get_writer(save_path, fps=fps, quality=quality)
+    # Ensure the path has .mp4 extension
+    if not save_path.lower().endswith('.mp4'):
+        save_path = os.path.splitext(save_path)[0] + '.mp4'
+    
+    save_dir = os.path.dirname(save_path)
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+    
+    w = imageio.get_writer(save_path, fps=fps, quality=quality, format='FFMPEG')
     for f in tqdm(frames, desc=f"Saving {os.path.basename(save_path)}"):
         w.append_data(np.array(f))
     w.close()
@@ -463,11 +470,15 @@ def main():
     
     # Determine output file name
     input_name = os.path.basename(args.input.rstrip('/')).split('.')[0]
-    if os.path.isdir(args.output):
+    if os.path.isdir(args.output) or not os.path.splitext(args.output)[1]:
+        # If output is a directory or has no extension, treat it as a directory
         output_filename = f"FlashVSR-Pro_{args.mode}_{input_name}_seed{args.seed}.mp4"
         output_path = os.path.join(args.output, output_filename)
     else:
         output_path = args.output
+        # Ensure output has .mp4 extension
+        if not output_path.lower().endswith('.mp4'):
+            output_path = os.path.splitext(output_path)[0] + '.mp4'
     
     print(f"Output: {output_path}")
     

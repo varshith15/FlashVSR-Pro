@@ -394,6 +394,17 @@ class TCDVAELoader:
 
                 return decoded
 
+            def decode_video(self, latents, parallel=False, show_progress_bar=False, cond=None):
+                """Decode video with optional conditioning (for FlashVSRTinyPipeline)."""
+                # latents: (B, T, C, H, W) format
+                # Directly pass to the underlying TCDecoder model
+                return self.tcd_model.decode_video(
+                    latents,
+                    parallel=parallel,
+                    show_progress_bar=show_progress_bar,
+                    cond=cond
+                )
+
             def clear_cache(self):
                 if hasattr(self.tcd_model, 'clean_mem'):
                     self.tcd_model.clean_mem()
