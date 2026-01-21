@@ -219,13 +219,13 @@ class FlashVSRTinyPipeline(BasePipeline):
     def init_cross_kv(
         self,
         context_tensor: Optional[torch.Tensor] = None,
+        prompt_path: Optional[str] = "models/prompt_tensor/posi_prompt.pth",
     ):
         self.load_models_to_device(["dit"])
         """
         使用固定 prompt 生成文本 context，并在 WanModel 中初始化所有 CrossAttention 的 KV 缓存。
         必须在 __call__ 前显式调用一次。
         """
-        prompt_path = "models/prompt_tensor/posi_prompt.pth"
 
         if self.dit is None:
             raise RuntimeError("请先通过 fetch_models / from_model_manager 初始化 self.dit")
