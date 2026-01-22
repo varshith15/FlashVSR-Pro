@@ -23,13 +23,13 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 
 from diffsynth import ModelManager, FlashVSRFullPipeline, FlashVSRTinyPipeline, FlashVSRTinyLongPipeline
-from utils.core.utils import Causal_LQ4x_Proj
-from utils.core.TCDecoder import build_tcdecoder
-from utils.vae import vae_system
+from flashvsr_utils.core.utils import Causal_LQ4x_Proj
+from flashvsr_utils.core.TCDecoder import build_tcdecoder
+from flashvsr_utils.vae import vae_system
 
 # Optional audio utilities
 try:
-    from utils.processing.audio_utils import copy_video_with_audio, has_audio_stream
+    from flashvsr_utils.processing.audio_utils import copy_video_with_audio, has_audio_stream
     AUDIO_AVAILABLE = True
 except ImportError as e:
     AUDIO_AVAILABLE = False

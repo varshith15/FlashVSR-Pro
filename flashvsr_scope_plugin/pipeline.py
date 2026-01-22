@@ -5,8 +5,8 @@ from scope.core.config import get_model_file_path
 from scope.core.pipelines.process import preprocess_chunk, postprocess_chunk
 from scope.core.pipelines.interface import Pipeline, Requirements
 from diffsynth import ModelManager, FlashVSRTinyPipeline
-from utils.core.utils import Causal_LQ4x_Proj
-from utils.vae import vae_system
+from flashvsr_utils.core.utils import Causal_LQ4x_Proj
+from flashvsr_utils.vae import vae_system
 
 from .schema import FlashVSRConfig
 

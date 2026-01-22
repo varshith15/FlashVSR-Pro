@@ -12,19 +12,19 @@ from .utils import hash_state_dict_keys
 try:
     import flash_attn_interface
     FLASH_ATTN_3_AVAILABLE = True
-except ModuleNotFoundError:
+except ImportError:
     FLASH_ATTN_3_AVAILABLE = False
 
 try:
     import flash_attn
     FLASH_ATTN_2_AVAILABLE = True
-except ModuleNotFoundError:
+except ImportError:
     FLASH_ATTN_2_AVAILABLE = False
 
 try:
     from sageattention import sageattn
     SAGE_ATTN_AVAILABLE = True
-except ModuleNotFoundError:
+except ImportError:
     SAGE_ATTN_AVAILABLE = False
 
 from block_sparse_attn import block_sparse_attn_func

@@ -17,8 +17,8 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 
 from diffsynth import ModelManager, FlashVSRTinyPipeline
-from utils.core.utils import Causal_LQ4x_Proj
-from utils.vae import vae_system
+from flashvsr_utils.core.utils import Causal_LQ4x_Proj
+from flashvsr_utils.vae import vae_system
 
 def parse_args():
     parser = argparse.ArgumentParser(description="FlashVSR-Pro Tiny Inference (Stream Mode)")

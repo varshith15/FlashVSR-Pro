@@ -40,7 +40,7 @@ dependencies = [
 ]
 
 [project.entry-points.scope]
-flashvsr = "scope_plugin"
+flashvsr = "flashvsr_scope_plugin"
 
 [tool.uv]
 override-dependencies = [
@@ -57,8 +57,8 @@ block-sparse-attn = ["torch==2.9.1"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["diffsynth*", "utils*", "scope_plugin*"]
+include = ["diffsynth*", "flashvsr_utils*", "flashvsr_scope_plugin*"]
 namespaces = false
 
 [tool.setuptools.package-dir]
-scope_plugin = "scope_plugin"
+flashvsr_scope_plugin = "flashvsr_scope_plugin"
