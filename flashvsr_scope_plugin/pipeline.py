@@ -22,12 +22,17 @@ class FlashVSRPipeline(Pipeline):
         self,
         device: torch.device | None = None,
         dtype: torch.dtype = torch.bfloat16,
+        height: int = 512,
+        width: int = 512,
         **kwargs,
     ):
         self.device = device or torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
         )
         self.dtype = dtype
+        self.height = height
+        self.width = width
+        self.warmed_up_resolution = None
 
         model_path = str(get_model_file_path("FlashVSR-v1.1"))
         posi_prompt_path = os.path.join(str(get_model_file_path("posi_prompt")), "posi_prompt.pth")
@@ -50,12 +55,13 @@ class FlashVSRPipeline(Pipeline):
 
         self.pipe.to(self.device)
         self.pipe.init_cross_kv(prompt_path=posi_prompt_path)
-        self._warmup()
+        self._warmup(self.height, self.width)
 
-    def _warmup(self) -> None:
-        dummy_frames = torch.randn(1, 3, 25, 512, 512, device=self.device, dtype=self.dtype).clamp(-1, 1)
-        warmup_output = self.pipe.stream(dummy_frames, height=512, width=512, seed=0)
-        logger.info(f"FlashVSR warmup completed successfully")
+    def _warmup(self, height: int, width: int) -> None:
+        dummy_frames = torch.randn(1, 3, 25, height, width, device=self.device, dtype=self.dtype).clamp(-1, 1)
+        warmup_output = self.pipe.stream(dummy_frames, height=height, width=width, seed=0)
+        self.warmed_up_resolution = (height, width)
+        logger.info(f"FlashVSR warmup completed successfully at {height}x{width}, output shape: {warmup_output.shape}")
 
 
     def prepare(self, **kwargs) -> Requirements:
@@ -69,9 +75,11 @@ class FlashVSRPipeline(Pipeline):
 
         input_tensor = preprocess_chunk(video, self.device, self.dtype)
         _, _, T, H, W = input_tensor.shape
+        
+        if self.warmed_up_resolution != (H, W):
+            self._warmup(H, W)
+        
         out_chunk = self.pipe.stream(input_tensor, height=H, width=W, seed=0)
-
         out_chunk = out_chunk.permute(0, 2, 1, 3, 4)
         result = postprocess_chunk(out_chunk)
-
         return result
