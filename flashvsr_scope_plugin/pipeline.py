@@ -32,6 +32,7 @@ class FlashVSRPipeline(Pipeline):
         self.dtype = dtype
         self.height = height
         self.width = width
+        self.multiple = 128
         self.warmed_up_resolution = None
 
         model_path = str(get_model_file_path("FlashVSR-v1.1"))
@@ -73,7 +74,11 @@ class FlashVSRPipeline(Pipeline):
         if video is None:
             raise ValueError("Input video cannot be None for FlashVSR pipeline")
 
-        input_tensor = preprocess_chunk(video, self.device, self.dtype)
+        _, h, w, _ = video[0].shape
+        target_h = (h // self.multiple) * self.multiple
+        target_w = (w // self.multiple) * self.multiple
+
+        input_tensor = preprocess_chunk(video, self.device, self.dtype, height=target_h, width=target_w)
         _, _, T, H, W = input_tensor.shape
         
         if self.warmed_up_resolution != (H, W):

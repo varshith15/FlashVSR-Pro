@@ -41,8 +41,8 @@ def save_video(frames, save_path, fps=30, quality=6):
         w.append_data(np.array(f))
     w.close()
 
-def pil_to_tensor_neg1_1(img: Image.Image, dtype=torch.bfloat16, device='cuda'):
-    t = torch.from_numpy(np.asarray(img, np.uint8).copy()).to(device=device, dtype=dtype)
+def pil_to_tensor_neg1_1(img: Image.Image, dtype=torch.bfloat16):
+    t = torch.from_numpy(np.asarray(img, np.uint8).copy()).to(dtype=dtype)
     t = t.permute(2,0,1) / 255.0 * 2.0 - 1.0
     return t
 
@@ -61,7 +61,7 @@ def upscale_then_center_crop(img: Image.Image, scale: float, tW: int, tH: int) -
     l, t = (sW - tW) // 2, (sH - tH) // 2
     return up.crop((l, t, l + tW, t + tH))
 
-def prepare_input_tensor(path: str, scale: float = 2, dtype=torch.bfloat16, device='cuda'):
+def prepare_input_tensor(path: str, scale: float = 2, dtype=torch.bfloat16):
     frames = []
     fps = 30
     
@@ -77,7 +77,7 @@ def prepare_input_tensor(path: str, scale: float = 2, dtype=torch.bfloat16, devi
     for i, frame in enumerate(tqdm(rdr, desc="Loading video")):
         img = Image.fromarray(frame).convert('RGB')
         img_out = upscale_then_center_crop(img, scale=scale, tW=tW, tH=tH)
-        frames.append(pil_to_tensor_neg1_1(img_out, dtype, device))
+        frames.append(pil_to_tensor_neg1_1(img_out, dtype))
     rdr.close()
         
     vid = torch.stack(frames, 0).permute(1,0,2,3).unsqueeze(0) # (1, C, T, H, W)
@@ -91,7 +91,7 @@ def main():
     print(f"Device: {device}")
     
     print(f"Loading input: {args.input}")
-    LQ, tH, tW, F, fps = prepare_input_tensor(args.input, scale=args.scale, dtype=dtype, device=device)
+    LQ, tH, tW, F, fps = prepare_input_tensor(args.input, scale=args.scale, dtype=dtype)
     print(f"Input loaded. Frames: {F}, Target Size: {tW}x{tH}, FPS: {fps}")
 
     model_dir = os.getenv("FLASHVSR_MODEL_PATH", "./models/FlashVSR-v1.1")
@@ -135,7 +135,7 @@ def main():
     for i in range(num_chunks):
         start_idx = i * 8
         end_idx = start_idx + 8
-        chunk = LQ[:, :, start_idx:end_idx, :, :]
+        chunk = LQ[:, :, start_idx:end_idx, :, :].to(device=device, dtype=dtype)
         
         t0 = time.time()
         out_chunk = pipe.stream(chunk, height=tH, width=tW, seed=args.seed)
@@ -149,6 +149,7 @@ def main():
         print(f"Chunk {i+1}/{num_chunks} (Frames {start_idx}-{end_idx}): FPS={fps_chunk:.2f}")
         
         output_frames.append(out_chunk.cpu())
+        chunk.cpu()
         
     avg_fps = sum(fps_list) / len(fps_list)
     avg_latency = sum(latencies) / len(latencies)
