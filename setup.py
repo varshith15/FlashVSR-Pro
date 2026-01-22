@@ -8,7 +8,8 @@ requirements_path = os.path.join(os.path.dirname(__file__), "requirements.txt")
 # Read the requirements from the requirements file
 if os.path.exists(requirements_path):
     with open(requirements_path, 'r') as f:
-        install_requires = [str(r) for r in pkg_resources.parse_requirements(f)]
+        lines = [line for line in f if not line.strip().startswith(".")]
+        install_requires = [str(r) for r in pkg_resources.parse_requirements(lines)]
 else:
     install_requires = []
 
