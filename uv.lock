@@ -606,7 +606,6 @@ dependencies = [
     { name = "protobuf" },
     { name = "pytorch-lightning" },
     { name = "safetensors" },
-    { name = "sageattention" },
     { name = "sentencepiece" },
     { name = "torch" },
     { name = "torchaudio" },
@@ -639,7 +638,6 @@ requires-dist = [
     { name = "protobuf", specifier = "==3.20.3" },
     { name = "pytorch-lightning", specifier = "==2.5.2" },
     { name = "safetensors", specifier = ">=0.6.2" },
-    { name = "sageattention", git = "https://github.com/woct0rdho/SageAttention.git" },
     { name = "sentencepiece", specifier = "==0.2.0" },
     { name = "torch", specifier = "==2.9.1" },
     { name = "torchaudio", specifier = "==2.9.1" },
@@ -2304,11 +2302,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/d3/0b/4811bfec67fa260e791369b16dab105e4bae82686120554cc484064e22b4/safetensors-0.7.0-pp310-pypy310_pp73-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl", hash = "sha256:0071bffba4150c2f46cae1432d31995d77acfd9f8db598b5d1a2ce67e8440ad2", size = 623890, upload-time = "2025-11-19T15:18:22.666Z" },
     { url = "https://files.pythonhosted.org/packages/58/5b/632a58724221ef03d78ab65062e82a1010e1bef8e8e0b9d7c6d7b8044841/safetensors-0.7.0-pp310-pypy310_pp73-manylinux_2_17_s390x.manylinux2014_s390x.whl", hash = "sha256:473b32699f4200e69801bf5abf93f1a4ecd432a70984df164fc22ccf39c4a6f3", size = 531885, upload-time = "2025-11-19T15:18:27.146Z" },
 ]
-
-[[package]]
-name = "sageattention"
-version = "2.2.0"
-source = { git = "https://github.com/woct0rdho/SageAttention.git#a24aa1705f6edab1b07ccda737612cdbcf97cbd1" }
 
 [[package]]
 name = "scipy"
