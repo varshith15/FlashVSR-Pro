@@ -24,6 +24,7 @@ class FlashVSRPipeline(Pipeline):
         dtype: torch.dtype = torch.bfloat16,
         height: int = 512,
         width: int = 512,
+        upscale_factor: float = 2.0,
         **kwargs,
     ):
         self.device = device or torch.device(
@@ -32,6 +33,7 @@ class FlashVSRPipeline(Pipeline):
         self.dtype = dtype
         self.height = height
         self.width = width
+        self.upscale_factor = upscale_factor
         self.multiple = 128
         self.warmed_up_resolution = None
 
@@ -75,8 +77,12 @@ class FlashVSRPipeline(Pipeline):
             raise ValueError("Input video cannot be None for FlashVSR pipeline")
 
         _, h, w, _ = video[0].shape
-        target_h = (h // self.multiple) * self.multiple
-        target_w = (w // self.multiple) * self.multiple
+        
+        target_h = int(h * self.upscale_factor)
+        target_w = int(w * self.upscale_factor)
+        
+        target_h = (target_h // self.multiple) * self.multiple
+        target_w = (target_w // self.multiple) * self.multiple
 
         input_tensor = preprocess_chunk(video, self.device, self.dtype, height=target_h, width=target_w)
         _, _, T, H, W = input_tensor.shape
