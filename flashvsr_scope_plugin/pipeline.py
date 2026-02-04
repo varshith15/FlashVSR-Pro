@@ -70,7 +70,7 @@ class FlashVSRPipeline(Pipeline):
     def prepare(self, **kwargs) -> Requirements:
         return Requirements(input_size=8)
 
-    def __call__(self, **kwargs) -> torch.Tensor:
+    def __call__(self, **kwargs) -> dict:
         video = kwargs.get("video")
 
         if video is None:
@@ -93,4 +93,4 @@ class FlashVSRPipeline(Pipeline):
         out_chunk = self.pipe.stream(input_tensor, height=H, width=W, seed=0)
         out_chunk = out_chunk.permute(0, 2, 1, 3, 4)
         result = postprocess_chunk(out_chunk)
-        return result
+        return {"video": result}
