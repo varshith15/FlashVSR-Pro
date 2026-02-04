@@ -36,7 +36,17 @@ dependencies = [
     "datasets",
     "ffmpeg-python",
     "modelscope",
+    "triton==3.5.1; sys_platform == 'linux'",
+    "triton-windows==3.5.1.post24; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+block-sparse = [
     "block-sparse-attn",
+]
+attention = [
+    "flash-attn==2.8.3; sys_platform == 'linux' or sys_platform == 'win32'",
+    "sageattention==2.2.0; sys_platform == 'linux' or sys_platform == 'win32'",
 ]
 
 [project.entry-points.scope]
@@ -49,7 +59,20 @@ override-dependencies = [
     "torchaudio==2.9.1",
 ]
 
+# Prebuilt wheels for flash-attn and sageattention
 [tool.uv.sources]
+flash-attn = [
+    # Prebuilt Linux wheels from https://github.com/Dao-AILab/flash-attention
+    { url = "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl", marker = "sys_platform == 'linux'" },
+    # Prebuilt Windows wheels from https://github.com/kingbri1/flash-attention
+    { url = "https://github.com/kingbri1/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu128torch2.9.0cxx11abiFALSE-cp312-cp312-win_amd64.whl", marker = "sys_platform == 'win32'" },
+]
+sageattention = [
+    # Prebuilt Linux wheels from https://huggingface.co/Kijai/PrecompiledWheels
+    { url = "https://huggingface.co/Kijai/PrecompiledWheels/resolve/main/sageattention-2.2.0-cp312-cp312-linux_x86_64.whl", marker = "sys_platform == 'linux'" },
+    # Prebuilt Windows wheels from https://github.com/woct0rdho/SageAttention/releases
+    { url = "https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post4/sageattention-2.2.0+cu128torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl", marker = "sys_platform == 'win32'" },
+]
 block-sparse-attn = { path = "./Block-Sparse-Attention" }
 
 [tool.uv.extra-build-dependencies]
