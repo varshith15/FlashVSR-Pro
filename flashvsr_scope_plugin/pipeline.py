@@ -31,10 +31,10 @@ class FlashVSRPipeline(Pipeline):
             "cuda" if torch.cuda.is_available() else "cpu"
         )
         self.dtype = dtype
-        self.height = height
-        self.width = width
         self.upscale_factor = upscale_factor
         self.multiple = 128
+        self.height = self._align_to_multiple(height)
+        self.width = self._align_to_multiple(width)
         self.warmed_up_resolution = None
 
         model_path = str(get_model_file_path("FlashVSR-v1.1"))
@@ -60,6 +60,9 @@ class FlashVSRPipeline(Pipeline):
         self.pipe.init_cross_kv(prompt_path=posi_prompt_path)
         self._warmup(self.height, self.width)
 
+    def _align_to_multiple(self, value: int) -> int:
+        return (value // self.multiple) * self.multiple
+
     def _warmup(self, height: int, width: int) -> None:
         dummy_frames = torch.randn(1, 3, 25, height, width, device=self.device, dtype=self.dtype).clamp(-1, 1)
         warmup_output = self.pipe.stream(dummy_frames, height=height, width=width, seed=0)
@@ -81,11 +84,11 @@ class FlashVSRPipeline(Pipeline):
         target_h = int(h * self.upscale_factor)
         target_w = int(w * self.upscale_factor)
         
-        target_h = (target_h // self.multiple) * self.multiple
-        target_w = (target_w // self.multiple) * self.multiple
+        target_h = self._align_to_multiple(target_h)
+        target_w = self._align_to_multiple(target_w)
 
         input_tensor = preprocess_chunk(video, self.device, self.dtype, height=target_h, width=target_w)
-        _, _, T, H, W = input_tensor.shape
+        _, _, _, H, W = input_tensor.shape
         
         if self.warmed_up_resolution != (H, W):
             self._warmup(H, W)

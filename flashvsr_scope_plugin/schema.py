@@ -1,7 +1,7 @@
 """Configuration schema for FlashVSR pipeline."""
 
 from scope.core.pipelines.artifacts import HuggingfaceRepoArtifact
-from scope.core.pipelines.base_schema import BasePipelineConfig, ModeDefaults
+from scope.core.pipelines.base_schema import BasePipelineConfig, ModeDefaults, UsageType
 
 
 class FlashVSRConfig(BasePipelineConfig):
@@ -12,17 +12,12 @@ class FlashVSRConfig(BasePipelineConfig):
     pipeline_description = "Real-time Video Super Resolution using FlashVSR."
     docs_url = "https://github.com/varshith15/FlashVSR-Pro.git"
 
+    usage = [UsageType.POSTPROCESSOR]
+
     supports_prompts = False
 
-    height: int = 512
-    width: int = 512
-
     modes = {
-        "video": ModeDefaults(
-            default=True,
-            height=512,
-            width=512,
-        )
+        "video": ModeDefaults(default=True)
     }
 
     artifacts = [
